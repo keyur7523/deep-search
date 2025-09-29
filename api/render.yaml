@@ -1,0 +1,36 @@
+services:
+- type: web
+  name: iris-api
+  env: python
+  rootDir: api
+  buildCommand: pip install -r requirements.txt
+  startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+  envVars:
+  - key: WEB_ORIGIN
+    sync: false
+  - key: MONGODB_URI
+    sync: false
+  - key: MONGODB_DB
+    value: iris
+  - key: AWS_ACCESS_KEY_ID
+    sync: false
+  - key: AWS_SECRET_ACCESS_KEY
+    sync: false
+  - key: AWS_REGION
+    value: us-east-1
+  - key: S3_BUCKET
+    sync: false
+  - key: LLM_API_KEY
+    sync: false
+  - key: LLM_BASE_URL
+    value: https://api.openai.com/v1
+  - key: LLM_MODEL_PLANNER
+    value: gpt-4o-mini
+  - key: LLM_MODEL_WRITER
+    value: gpt-4o-mini
+  - key: SEARCH_PROVIDER
+    value: serpapi
+  - key: SERPAPI_KEY
+    sync: false
+  - key: BRAVE_API_KEY
+    sync: false
