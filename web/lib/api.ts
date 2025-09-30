@@ -1,6 +1,7 @@
 import type { OutlineItemData } from "@/components/outline-item"
 import type { Source } from "@/components/sources-table"
 import type { Note } from "@/components/notes-log"
+import type { ResearchThread, ResearchMessage, NewResearchRequest } from "@/lib/types"
 import { API_BASE } from "@/lib/config"
 
 export interface Project {
@@ -58,6 +59,7 @@ export async function startRun(data: {
   topic: string
   maxParagraphs: number
   roundsPerParagraph: number
+  searchProvider?: string
 }): Promise<Run> {
   // First create a project for this run
   const project = await createProject(data.topic)
@@ -72,6 +74,7 @@ export async function startRun(data: {
       rounds: data.roundsPerParagraph,
       resultsPerRound: 8,
       keepPerParagraph: data.maxParagraphs,
+      searchProvider: data.searchProvider || "hybrid",
     }),
   })
   
@@ -153,4 +156,80 @@ export async function getRecentRuns(limit: number = 5): Promise<RunDetails[]> {
   
   const data = await response.json()
   return data.runs || []
+}
+
+// New Research Thread API functions
+export async function getResearchThreads(limit: number = 20): Promise<ResearchThread[]> {
+  const response = await fetch(`${API_BASE}/research/threads?limit=${limit}`)
+  
+  if (!response.ok) {
+    throw new Error(`Failed to get research threads: ${response.statusText}`)
+  }
+  
+  const data = await response.json()
+  return data.threads || []
+}
+
+export async function getResearchThread(threadId: string): Promise<ResearchThread> {
+  const response = await fetch(`${API_BASE}/research/threads/${threadId}`)
+  
+  if (!response.ok) {
+    throw new Error(`Failed to get research thread: ${response.statusText}`)
+  }
+  
+  return await response.json()
+}
+
+export async function getResearchMessages(threadId: string, limit: number = 50): Promise<ResearchMessage[]> {
+  const response = await fetch(`${API_BASE}/research/threads/${threadId}/messages?limit=${limit}`)
+  
+  if (!response.ok) {
+    throw new Error(`Failed to get research messages: ${response.statusText}`)
+  }
+  
+  const data = await response.json()
+  return data.messages || []
+}
+
+export async function startNewResearch(data: NewResearchRequest): Promise<ResearchThread> {
+  // First create a project
+  const project = await createProject(data.topic)
+  
+  // Then create a run for the project
+  const response = await fetch(`${API_BASE}/projects/${project.id}/runs`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      rounds: data.roundsPerParagraph,
+      resultsPerRound: 8,
+      keepPerParagraph: data.maxParagraphs,
+      searchProvider: data.searchProvider || "hybrid",
+    }),
+  })
+  
+  if (!response.ok) {
+    throw new Error(`Failed to start research: ${response.statusText}`)
+  }
+  
+  const runData = await response.json()
+  
+  // Return the thread data
+  return {
+    id: runData.run_id,
+    title: data.topic,
+    status: "active",
+    messages: [],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    progress: 0,
+    metadata: {
+      maxParagraphs: data.maxParagraphs,
+      roundsPerParagraph: data.roundsPerParagraph,
+      searchProvider: data.searchProvider || "hybrid",
+      totalSources: 0,
+      qualityScore: 0
+    }
+  }
 }

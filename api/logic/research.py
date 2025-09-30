@@ -48,9 +48,19 @@ async def start_run_task(run_id: str):
         logger.error(f"❌ Run not found: {run_id}")
         return
     
+    # Get project info for user message
+    project = await db().projects.find_one({"_id": run["projectId"]})
+    topic = project.get("title", "") if project else ""
+    
+    # Add user message
+    await add_research_message(run_id, "user", f"Research '{topic}'")
+    
     logger.info(f"📋 Found run, updating status to 'planning'...")
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"planning"}})
     await live.set_live(run_id, "planning", "Planning outline…")
+    
+    # Add system message
+    await add_research_message(run_id, "system", f"🚀 Starting comprehensive research on '{topic}'\nI'll create a detailed outline and gather authoritative sources.")
 
     project = await db().projects.find_one({"_id": run["projectId"]})
     topic = project.get("title","")
@@ -59,11 +69,22 @@ async def start_run_task(run_id: str):
     logger.info(f"📚 Research topic: '{topic}' with {n} max paragraphs")
     logger.info("🧠 Planning research outline with LLM...")
     
+    # Add progress message
+    await add_research_message(run_id, "progress", f"📋 Planning outline with {n} sections...")
+    
     try:
         outline = await llm.plan_outline(topic, n)
         logger.info(f"📋 Generated outline with {len(outline)} items")
+        
+        # Add outline message
+        outline_text = "✅ Created research outline:\n"
+        for i, item in enumerate(outline[:n]):
+            outline_text += f"  {i+1}. {item.get('heading', f'Section {i+1}')}\n"
+        await add_research_message(run_id, "outline", outline_text)
+        
     except Exception as e:
         logger.error(f"❌ LLM API Error during outline planning: {e}")
+        await add_research_message(run_id, "error", f"❌ Failed to plan outline: {str(e)}")
         await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"failed", "error": str(e)}})
         return
     
@@ -84,6 +105,9 @@ async def start_run_task(run_id: str):
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"running"}})
     await live.set_live(run_id, "outline", f"Outline ready ({len(oi_ids)} sections)")
 
+    # Add research phase message
+    await add_research_message(run_id, "system", f"🔍 Starting research phase...\nI'll gather sources and analyze content for each section.")
+
     # process each outline item
     cfg = run.get("config", {})
     logger.info(f"⚙️ Processing {len(oi_ids)} outline items with config: {cfg}")
@@ -92,10 +116,12 @@ async def start_run_task(run_id: str):
     KEEP = int(cfg.get("keepPerParagraph", 6))
 
     for oi_id in oi_ids:
-        await _work_outline_item(oi_id, R, TOP, KEEP)
+        await _work_outline_item(oi_id, R, TOP, KEEP, run_id)
 
     # aggregate
     await live.set_live(run_id, "aggregate", "Assembling final report…")
+    await add_research_message(run_id, "progress", f"🔄 Assembling final report from {len(oi_ids)} sections...")
+    
     paras = [p async for p in db().paragraphs.find({"runId": run["_id"]}).sort("idx", 1)]
     try:
         md = await llm.aggregate_report(topic, paras)
@@ -109,13 +135,26 @@ async def start_run_task(run_id: str):
     await db().reports.insert_one({"runId": run["_id"], "markdown": md})
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"done"}})
     await live.set_live(run_id, "done", "Done.")
+    
+    # Add completion message
+    total_sources = await db().sources.count_documents({"runId": run["_id"]})
+    avg_quality = sum(p.get("quality", 0) for p in paras) / len(paras) if paras else 0
+    await add_research_message(run_id, "complete", f"🎉 Research completed!\n\n📊 Summary:\n• {len(paras)} sections written\n• {total_sources} sources analyzed\n• Average quality: {avg_quality:.1f}/10\n• Search provider: {cfg.get('searchProvider', 'hybrid')}", {
+        "sections": len(paras),
+        "totalSources": total_sources,
+        "qualityScore": avg_quality,
+        "searchProvider": cfg.get("searchProvider", "hybrid")
+    })
 
-async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
+async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_id: str):
     oi = await db().outlineItems.find_one({"_id": oi_id})
     if not oi: return
     
     # Update status to searching
     await db().outlineItems.update_one({"_id": oi_id}, {"$set":{"status":"searching"}})
+    
+    # Add section start message
+    await add_research_message(run_id, "progress", f"🔍 Section {oi['idx']}: {oi['heading']}\nStarting research...")
 
     seen_urls: list[str] = []
     kept_pages: list[Dict[str,Any]] = []
@@ -123,13 +162,24 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
     for r in range(1, R+1):
         q = await llm.propose_query(oi["brief"], seen_urls)
         await live.set_live(oi["runId"], "search", f'Searching: "{_short(q.get("query",""), 48)}" (round {r})', {"outlineItemId": str(oi_id)})
+        
+        # Add search message
+        await add_research_message(run_id, "search", f"🔍 Searching: \"{q.get('query', '')}\" (Round {r})", {
+            "section": oi["idx"],
+            "sectionTitle": oi["heading"],
+            "round": r,
+            "query": q.get("query", ""),
+            "rationale": q.get("rationale", "")
+        })
+        
         await db().searchQueries.insert_one({
             "outlineItemId": oi_id,
             "round": r,
             "query": q.get("query",""),
             "rationale": q.get("rationale","")
         })
-        results = await search.web_search(q.get("query",""), TOP) or []
+        provider = cfg.get("searchProvider", "hybrid")
+        results = await search.web_search(q.get("query",""), TOP, provider) or []
         pages = []
         for res in results:
             url = res.get("url","")
@@ -148,7 +198,7 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
         await live.set_live(oi["runId"], "reflect", "Analyzing gaps…", {"round": r})
         nxt = notes.get("next_query")
         if nxt:  # optional second pass tweak
-            results2 = await search.web_search(nxt, TOP//2) or []
+            results2 = await search.web_search(nxt, TOP//2, provider) or []
             for res in results2:
                 url = res.get("url","")
                 if not url or url in seen_urls: continue
@@ -171,12 +221,29 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
 
     # cap and write paragraph
     kept_pages = kept_pages[:KEEP]
+    
+    # Add source summary message
+    academic_sources = sum(1 for p in kept_pages if p.get("type") == "academic")
+    web_sources = len(kept_pages) - academic_sources
+    await add_research_message(run_id, "source", f"📄 Found {len(kept_pages)} sources ({academic_sources} academic, {web_sources} web)\nAnalyzing content...", {
+        "section": oi["idx"],
+        "sources": len(kept_pages),
+        "academic": academic_sources,
+        "web": web_sources
+    })
+    
     await db().outlineItems.update_one({"_id": oi_id}, {"$set": {"status": "drafting"}})
     await live.set_live(oi["runId"], "draft", f'Writing section {oi["idx"]}…')
+    
+    # Add drafting message
+    await add_research_message(run_id, "progress", f"✍️ Writing Section {oi['idx']}: {oi['heading']}")
+    
     para = await llm.write_paragraph(oi["brief"], kept_pages)
     # Convert numeric keys to string keys for MongoDB compatibility
     citations = para.get("citations", {})
     citations_str_keys = {str(k): v for k, v in citations.items()}
+    
+    quality_score = _parse_quality_score(para.get("quality", 0.0))
     
     await db().paragraphs.insert_one({
         "runId": oi["runId"],
@@ -184,11 +251,19 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
         "idx": oi["idx"],
         "draftMd": para.get("draftMd",""),
         "citations": citations_str_keys,
-        "quality": _parse_quality_score(para.get("quality", 0.0))
+        "quality": quality_score
     })
     # after inserting paragraph
     await db().outlineItems.update_one({"_id": oi_id}, {"$set": {"status": "done"}})
     await live.set_live(oi["runId"], "section", f'Section {oi["idx"]} done')
+    
+    # Add completion message
+    await add_research_message(run_id, "result", f"✅ Section {oi['idx']} completed\nQuality: {quality_score:.1f}/10 • {len(citations_str_keys)} citations", {
+        "section": oi["idx"],
+        "sectionTitle": oi["heading"],
+        "quality": quality_score,
+        "citations": len(citations_str_keys)
+    })
 
 # --- Public helpers for endpoints ---
 async def get_run_progress(run_id: str, user_sub: str):
@@ -221,3 +296,124 @@ async def get_report(run_id: str, user_sub: str):
         md = "\n\n".join(p.get("draftMd","") for p in paras)
         return {"markdown": md}
     return None
+
+# Research Thread functions
+async def get_research_threads(user_sub: str, limit: int = 20):
+    """Get research threads for a user"""
+    threads_cursor = db().runs.find().sort("createdAt", -1).limit(limit)
+    threads = []
+    async for run in threads_cursor:
+        # Get project info
+        project = await db().projects.find_one({"_id": run["projectId"]})
+        if not project:
+            continue
+            
+        # Get message count
+        message_count = await db().researchMessages.count_documents({"runId": run["_id"]})
+        
+        # Get latest message
+        latest_msg = await db().researchMessages.find_one(
+            {"runId": run["_id"]}, 
+            sort=[("timestamp", -1)]
+        )
+        
+        threads.append({
+            "id": str(run["_id"]),
+            "title": project.get("title", "Unknown Topic"),
+            "status": "completed" if run.get("status") == "done" else run.get("status", "queued"),
+            "progress": run.get("progress", 0),
+            "createdAt": run.get("createdAt"),
+            "updatedAt": latest_msg.get("timestamp") if latest_msg else run.get("createdAt"),
+            "messageCount": message_count,
+            "latestMessage": latest_msg.get("content", "") if latest_msg else ""
+        })
+    return threads
+
+async def get_research_messages(thread_id: str, user_sub: str, limit: int = 50):
+    """Get messages for a research thread"""
+    try:
+        rid = ObjectId(thread_id)
+    except Exception:
+        return []
+    
+    messages_cursor = db().researchMessages.find({"runId": rid}).sort("timestamp", 1).limit(limit)
+    messages = []
+    async for msg in messages_cursor:
+        messages.append({
+            "id": str(msg["_id"]),
+            "threadId": thread_id,
+            "type": msg.get("type", "system"),
+            "content": msg.get("content", ""),
+            "timestamp": msg.get("timestamp"),
+            "metadata": msg.get("metadata", {}),
+            "isStreaming": msg.get("isStreaming", False)
+        })
+    return messages
+
+async def get_research_thread(thread_id: str, user_sub: str):
+    """Get full research thread details"""
+    try:
+        rid = ObjectId(thread_id)
+    except Exception:
+        return None
+    
+    run = await db().runs.find_one({"_id": rid})
+    if not run:
+        return None
+    
+    # Get project info
+    project = await db().projects.find_one({"_id": run["projectId"]})
+    if not project:
+        return None
+    
+    # Get outline
+    outline_items = []
+    outline_cursor = db().outlineItems.find({"runId": rid}).sort("idx", 1)
+    async for item in outline_cursor:
+        outline_items.append({
+            "id": str(item["_id"]),
+            "index": item.get("idx", 0),
+            "title": item.get("heading", ""),
+            "brief": item.get("brief", ""),
+            "status": item.get("status", "queued"),
+            "progress": 100 if item.get("status") == "done" else 40 if item.get("status") == "drafting" else 20 if item.get("status") == "searching" else 0
+        })
+    
+    # Get final report
+    report = await get_report(thread_id, user_sub)
+    final_report = report.get("markdown", "") if report else ""
+    
+    # Get messages
+    messages = await get_research_messages(thread_id, user_sub, 100)
+    
+    return {
+        "id": thread_id,
+        "title": project.get("title", "Unknown Topic"),
+        "status": "completed" if run.get("status") == "done" else run.get("status", "queued"),
+        "messages": messages,
+        "createdAt": run.get("createdAt"),
+        "updatedAt": run.get("updatedAt", run.get("createdAt")),
+        "progress": run.get("progress", 0),
+        "outline": outline_items,
+        "finalReport": final_report,
+        "metadata": {
+            "maxParagraphs": project.get("maxParagraphs", 6),
+            "roundsPerParagraph": run.get("config", {}).get("rounds", 2),
+            "searchProvider": run.get("config", {}).get("searchProvider", "hybrid"),
+            "totalSources": await db().sources.count_documents({"runId": rid}),
+            "qualityScore": 0  # TODO: Calculate average quality score
+        }
+    }
+
+async def add_research_message(run_id: str, msg_type: str, content: str, metadata: dict = None):
+    """Add a research message to the database"""
+    msg_doc = {
+        "runId": ObjectId(run_id),
+        "type": msg_type,
+        "content": content,
+        "timestamp": asyncio.get_event_loop().time(),
+        "metadata": metadata or {},
+        "isStreaming": False
+    }
+    result = await db().researchMessages.insert_one(msg_doc)
+    return str(result.inserted_id)

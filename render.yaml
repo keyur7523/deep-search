@@ -29,7 +29,7 @@ services:
   - key: LLM_MODEL_WRITER
     value: gpt-4o-mini
   - key: SEARCH_PROVIDER
-    value: serpapi
+    value: hybrid
   - key: SERPAPI_KEY
     sync: false
   - key: BRAVE_API_KEY

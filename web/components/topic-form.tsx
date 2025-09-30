@@ -7,21 +7,23 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sparkles } from "lucide-react"
 
 interface TopicFormProps {
-  onSubmit: (data: { topic: string; maxParagraphs: number; roundsPerParagraph: number }) => void
+  onSubmit: (data: { topic: string; maxParagraphs: number; roundsPerParagraph: number; searchProvider?: string }) => void
 }
 
 export function TopicForm({ onSubmit }: TopicFormProps) {
   const [topic, setTopic] = useState("")
   const [maxParagraphs, setMaxParagraphs] = useState(5)
   const [roundsPerParagraph, setRoundsPerParagraph] = useState(3)
+  const [searchProvider, setSearchProvider] = useState("hybrid")
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (topic.trim()) {
-      onSubmit({ topic, maxParagraphs, roundsPerParagraph })
+      onSubmit({ topic, maxParagraphs, roundsPerParagraph, searchProvider })
     }
   }
 
@@ -40,7 +42,7 @@ export function TopicForm({ onSubmit }: TopicFormProps) {
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         <div className="space-y-2">
           <Label htmlFor="maxParagraphs" className="text-sm font-medium text-foreground">
             Max Paragraphs
@@ -69,6 +71,23 @@ export function TopicForm({ onSubmit }: TopicFormProps) {
             onChange={(e) => setRoundsPerParagraph(Number(e.target.value))}
             className="rounded-2xl"
           />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="searchProvider" className="text-sm font-medium text-foreground">
+            Search Type
+          </Label>
+          <Select value={searchProvider} onValueChange={setSearchProvider}>
+            <SelectTrigger className="rounded-2xl">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="hybrid">🎓 Academic + Web</SelectItem>
+              <SelectItem value="scholar">📚 Academic Only</SelectItem>
+              <SelectItem value="serpapi">🌐 Web Only</SelectItem>
+              <SelectItem value="brave">🔍 Brave Search</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
 

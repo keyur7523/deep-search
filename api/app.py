@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import json
 from models.db import db, ensure_indexes
 from services.s3util import presign_put_url
-from logic.research import start_run_task, get_run_progress, get_outline, get_report
+from logic.research import start_run_task, get_run_progress, get_outline, get_report, get_research_threads, get_research_messages, get_research_thread
 
 # Configure logging
 logging.basicConfig(
@@ -70,6 +70,7 @@ class NewRun(BaseModel):
     rounds: int = Field(default=int(os.getenv("ROUNDS_PER_PARAGRAPH", 2)))
     resultsPerRound: int = Field(default=int(os.getenv("RESULTS_PER_ROUND", 8)))
     keepPerParagraph: int = Field(default=int(os.getenv("KEEP_PER_PARAGRAPH", 6)))
+    searchProvider: str = Field(default="hybrid")
 
 @app.on_event("startup")
 async def _startup():
@@ -222,6 +223,27 @@ async def list_runs(user: User = Depends(get_user), limit: int = Query(5, ge=1, 
             "createdAt": run.get("createdAt"),
         })
     return {"runs": runs}
+
+# New Research Thread endpoints
+@app.get("/research/threads")
+async def get_threads(user: User = Depends(get_user), limit: int = Query(20, ge=1, le=100)):
+    """Get research threads for the user"""
+    threads = await get_research_threads(user.sub, limit)
+    return {"threads": threads}
+
+@app.get("/research/threads/{thread_id}/messages")
+async def get_messages(thread_id: str, user: User = Depends(get_user), limit: int = Query(50, ge=1, le=200)):
+    """Get messages for a specific research thread"""
+    messages = await get_research_messages(thread_id, user.sub, limit)
+    return {"messages": messages}
+
+@app.get("/research/threads/{thread_id}")
+async def get_thread(thread_id: str, user: User = Depends(get_user)):
+    """Get a specific research thread with full details"""
+    thread = await get_research_thread(thread_id, user.sub)
+    if not thread:
+        raise HTTPException(404, "thread not found")
+    return thread
 
 @app.get("/runs/{run_id}/live/stream")
 async def live_stream(run_id: str):
