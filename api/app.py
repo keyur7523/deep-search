@@ -1,4 +1,5 @@
 import os, asyncio
+import logging
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,9 +10,19 @@ from models.db import db, ensure_indexes
 from services.s3util import presign_put_url
 from logic.research import start_run_task, get_run_progress, get_outline, get_report
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 load_dotenv()
+logger.info("Environment variables loaded")
 
 app = FastAPI(title="Iris Research API", version="0.1.0")
+logger.info("FastAPI app created")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.getenv("WEB_ORIGIN", "*")],
@@ -19,6 +30,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+logger.info(f"CORS middleware configured with origins: {os.getenv('WEB_ORIGIN', '*')}")
 
 class User(BaseModel):
     sub: str
@@ -39,10 +51,16 @@ class NewRun(BaseModel):
 
 @app.on_event("startup")
 async def _startup():
+    logger.info("🚀 Starting up Iris Research API...")
     try:
+        logger.info("📊 Ensuring database indexes...")
         await ensure_indexes()
+        logger.info("✅ Database indexes created successfully")
     except Exception as e:
-        print(f"Startup index error: {e}")
+        logger.error(f"❌ Startup index error: {e}")
+        logger.warning("⚠️ Continuing startup despite index error...")
+    
+    logger.info("🎉 Iris Research API startup complete!")
 
 # --- Health ---
 @app.get("/health")
@@ -52,6 +70,7 @@ async def health():
 # --- Projects ---
 @app.post("/projects")
 async def create_project(p: NewProject, user: User = Depends(get_user)):
+    logger.info(f"📝 Creating new project: '{p.title}' for user: {user.sub}")
     doc = {
         "userId": user.sub,
         "title": p.title,
@@ -60,17 +79,26 @@ async def create_project(p: NewProject, user: User = Depends(get_user)):
         "createdAt": asyncio.get_event_loop().time(),
     }
     res = await db().projects.insert_one(doc)
-    return {"project_id": str(res.inserted_id)}
+    project_id = str(res.inserted_id)
+    logger.info(f"✅ Project created successfully with ID: {project_id}")
+    return {"project_id": project_id}
 
 @app.post("/projects/{project_id}/runs")
 async def create_run(project_id: str, cfg: NewRun, user: User = Depends(get_user)):
+    logger.info(f"🏃 Starting new research run for project: {project_id}")
     try:
         pid = ObjectId(project_id)
+        logger.info(f"✅ Valid project ID: {project_id}")
     except Exception:
+        logger.error(f"❌ Invalid project ID format: {project_id}")
         raise HTTPException(400, "bad project id")
+    
     project = await db().projects.find_one({"_id": pid, "userId": user.sub})
     if not project:
+        logger.error(f"❌ Project not found: {project_id} for user: {user.sub}")
         raise HTTPException(404, "project not found")
+    
+    logger.info(f"📋 Found project: '{project.get('title', 'Unknown')}'")
     run_doc = {
         "projectId": pid,
         "status": "queued",
@@ -79,6 +107,7 @@ async def create_run(project_id: str, cfg: NewRun, user: User = Depends(get_user
     }
     res = await db().runs.insert_one(run_doc)
     run_id = str(res.inserted_id)
+    logger.info(f"🚀 Created run with ID: {run_id}, starting background task...")
     asyncio.create_task(start_run_task(run_id))  # fire and forget
     return {"run_id": run_id}
 

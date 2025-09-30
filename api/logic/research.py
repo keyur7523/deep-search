@@ -1,23 +1,35 @@
 import asyncio
+import logging
 from typing import List, Dict, Any
 from bson import ObjectId
 from models.db import db
 from services import llm, search, extract
 
+logger = logging.getLogger(__name__)
+
 async def start_run_task(run_id: str):
+    logger.info(f"🚀 Starting research run task for ID: {run_id}")
     runs = db().runs
     run = await runs.find_one({"_id": ObjectId(run_id)})
     if not run:
+        logger.error(f"❌ Run not found: {run_id}")
         return
+    
+    logger.info(f"📋 Found run, updating status to 'planning'...")
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"planning"}})
 
     project = await db().projects.find_one({"_id": run["projectId"]})
     topic = project.get("title","")
     n = project.get("maxParagraphs", 6)
-
+    
+    logger.info(f"📚 Research topic: '{topic}' with {n} max paragraphs")
+    logger.info("🧠 Planning research outline with LLM...")
+    
     outline = await llm.plan_outline(topic, n)
+    logger.info(f"📋 Generated outline with {len(outline)} items")
+    
     oi_ids: List[ObjectId] = []
-    for item in outline[:n]:
+    for i, item in enumerate(outline[:n]):
         doc = {
             "runId": run["_id"],
             "idx": item.get("idx", len(oi_ids)+1),
@@ -27,11 +39,14 @@ async def start_run_task(run_id: str):
         }
         res = await db().outlineItems.insert_one(doc)
         oi_ids.append(res.inserted_id)
+        logger.info(f"📝 Created outline item {i+1}: '{doc['heading']}'")
 
+    logger.info("🏃 Updating run status to 'running'...")
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"running"}})
 
     # process each outline item
     cfg = run.get("config", {})
+    logger.info(f"⚙️ Processing {len(oi_ids)} outline items with config: {cfg}")
     R = int(cfg.get("rounds", 2))
     TOP = int(cfg.get("resultsPerRound", 8))
     KEEP = int(cfg.get("keepPerParagraph", 6))
