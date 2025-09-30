@@ -7,6 +7,29 @@ from services import llm, search, extract
 
 logger = logging.getLogger(__name__)
 
+def _parse_quality_score(quality):
+    """Parse quality score from various formats (string or numeric) to float."""
+    if isinstance(quality, (int, float)):
+        return float(quality)
+    
+    if isinstance(quality, str):
+        quality_lower = quality.lower()
+        if quality_lower in ['high', 'excellent', 'great']:
+            return 0.9
+        elif quality_lower in ['medium', 'good', 'average']:
+            return 0.7
+        elif quality_lower in ['low', 'poor', 'bad']:
+            return 0.3
+        else:
+            try:
+                return float(quality)
+            except ValueError:
+                logger.warning(f"Could not parse quality score: {quality}, using default 0.5")
+                return 0.5
+    
+    logger.warning(f"Unknown quality score type: {type(quality)}, using default 0.5")
+    return 0.5
+
 async def start_run_task(run_id: str):
     logger.info(f"🚀 Starting research run task for ID: {run_id}")
     runs = db().runs
@@ -130,13 +153,17 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
     kept_pages = kept_pages[:KEEP]
     await db().outlineItems.update_one({"_id": oi_id}, {"$set":{"status":"drafting"}})
     para = await llm.write_paragraph(oi["brief"], kept_pages)
+    # Convert numeric keys to string keys for MongoDB compatibility
+    citations = para.get("citations", {})
+    citations_str_keys = {str(k): v for k, v in citations.items()}
+    
     await db().paragraphs.insert_one({
         "runId": oi["runId"],
         "outlineItemId": oi_id,
         "idx": oi["idx"],
         "draftMd": para.get("draftMd",""),
-        "citations": para.get("citations", {}),
-        "quality": float(para.get("quality", 0.0))
+        "citations": citations_str_keys,
+        "quality": _parse_quality_score(para.get("quality", 0.0))
     })
     await db().outlineItems.update_one({"_id": oi_id}, {"$set":{"status":"done"}})
 

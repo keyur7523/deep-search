@@ -23,7 +23,12 @@ def get_client():
         
         logger.info(f"🔗 Connecting to MongoDB Atlas...")
         logger.info(f"📍 URI: {mongodb_uri[:20]}...{mongodb_uri[-10:]}")
-        _client = AsyncIOMotorClient(mongodb_uri, serverSelectionTimeoutMS=5000)
+        _client = AsyncIOMotorClient(
+            mongodb_uri, 
+            serverSelectionTimeoutMS=5000,
+            tlsCAFile=None,
+            tlsAllowInvalidCertificates=True
+        )
         logger.info("✅ MongoDB client created successfully")
     return _client
 

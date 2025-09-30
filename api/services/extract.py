@@ -7,7 +7,7 @@ def _hash_text(text: str) -> str:
 async def fetch_and_extract(url: str) -> Optional[Dict]:
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as cx:
-            r = await cx.get(url, headers={"User-Agent":"Mozilla/5.0 IrisResearchBot"})
+            r = await cx.get(url, headers={"User-Agent":"Mozilla/5.0 DeepResearchBot"})
             r.raise_for_status()
             html = r.text
     except Exception:

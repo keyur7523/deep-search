@@ -13,7 +13,7 @@ const jetbrainsMono = JetBrains_Mono({
 })
 
 export const metadata = {
-  title: "Iris Research - Multi-Agent Research Platform",
+  title: "Deep Research - Multi-Agent Research Platform",
   description: "AI-powered research platform for comprehensive topic exploration",
   generator: 'keyurdev',
   icons: {

@@ -15,7 +15,7 @@ export default function HomePage() {
                 <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
               </svg>
             </div>
-            <span className="font-semibold text-lg text-foreground">Iris Research</span>
+            <span className="font-semibold text-lg text-foreground">Deep Research</span>
           </Link>
 
           <nav className="hidden md:flex items-center gap-6">
@@ -46,7 +46,7 @@ export default function HomePage() {
             </h1>
 
             <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto text-pretty">
-              Iris Research orchestrates multiple AI agents to explore topics comprehensively, gather sources, and
+              Deep Research orchestrates multiple AI agents to explore topics comprehensively, gather sources, and
               generate detailed reports with citations.
             </p>
 
@@ -103,7 +103,7 @@ export default function HomePage() {
       <footer className="border-t border-border py-8">
         <div className="container px-4 md:px-6">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-            <p className="text-sm text-muted-foreground">© 2025 Iris Research. All rights reserved.</p>
+            <p className="text-sm text-muted-foreground">© 2025 Deep Research. All rights reserved.</p>
             <nav className="flex items-center gap-6">
               <Link href="/docs" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
                 Docs

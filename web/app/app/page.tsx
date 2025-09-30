@@ -33,13 +33,13 @@ export default function AppPage() {
   })
 
   const handleTopicSubmit = async (data: { topic: string; maxParagraphs: number; roundsPerParagraph: number }) => {
-    console.log("[v0] Starting new research:", data)
+    console.log("Starting new research:", data)
     try {
       const run = await startRun(data)
       setCurrentRunId(run.id)
       mutate() // Trigger revalidation
     } catch (error) {
-      console.error("[v0] Failed to start run:", error)
+      console.error("Failed to start run:", error)
     }
   }
 
@@ -165,10 +165,10 @@ export default function AppPage() {
               ) : runDetails?.draft ? (
                 <MarkdownViewer
                   content={runDetails.draft}
-                  onExportMd={() => console.log("[v0] Export markdown")}
-                  onExportPdf={() => console.log("[v0] Export PDF")}
-                  onRegenerate={(id) => console.log("[v0] Regenerate paragraph:", id)}
-                  onAddHint={(id, hint) => console.log("[v0] Add hint:", id, hint)}
+                  onExportMd={() => console.log("Export markdown")}
+                  onExportPdf={() => console.log("Export PDF")}
+                  onRegenerate={(id) => console.log("Regenerate paragraph:", id)}
+                  onAddHint={(id, hint) => console.log("Add hint:", id, hint)}
                 />
               ) : (
                 <div className="text-center py-12 text-muted-foreground">

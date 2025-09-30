@@ -44,7 +44,7 @@ export function AppShell({ children, leftRail, showLeftRail = false }: AppShellP
                   <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
                 </svg>
               </div>
-              <span className="font-semibold text-lg text-foreground">Iris Research</span>
+              <span className="font-semibold text-lg text-foreground">Deep Research</span>
             </Link>
           </div>
 

@@ -20,14 +20,15 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 logger.info("Environment variables loaded")
 
-app = FastAPI(title="Iris Research API", version="0.1.0")
+app = FastAPI(title="Deep Research API", version="0.1.0")
 logger.info("FastAPI app created")
 
+# Allow localhost for development
 origins = [o.strip() for o in os.getenv("WEB_ORIGINS", "*").split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=origins,          # e.g. ["http://localhost:3001", "http://localhost:3000"]
+    allow_credentials=True,         # only if you send cookies/Authorization
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -52,7 +53,7 @@ class NewRun(BaseModel):
 
 @app.on_event("startup")
 async def _startup():
-    logger.info("🚀 Starting up Iris Research API...")
+    logger.info("🚀 Starting up Deep Research API...")
     
     # Check environment variables
     logger.info("🔍 Checking environment variables...")
@@ -79,13 +80,13 @@ async def _startup():
         logger.error(f"❌ Startup index error: {e}")
         logger.warning("⚠️ Continuing startup despite index error...")
     
-    logger.info("🎉 Iris Research API startup complete!")
+    logger.info("🎉 Deep Research API startup complete!")
 
 # --- Root and Health ---
 @app.get("/")
 async def root():
     return {
-        "message": "Iris Research API", 
+        "message": "Deep Research API", 
         "version": "0.1.0",
         "status": "running",
         "docs": "/docs",
