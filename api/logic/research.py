@@ -25,8 +25,13 @@ async def start_run_task(run_id: str):
     logger.info(f"📚 Research topic: '{topic}' with {n} max paragraphs")
     logger.info("🧠 Planning research outline with LLM...")
     
-    outline = await llm.plan_outline(topic, n)
-    logger.info(f"📋 Generated outline with {len(outline)} items")
+    try:
+        outline = await llm.plan_outline(topic, n)
+        logger.info(f"📋 Generated outline with {len(outline)} items")
+    except Exception as e:
+        logger.error(f"❌ LLM API Error during outline planning: {e}")
+        await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"failed", "error": str(e)}})
+        return
     
     oi_ids: List[ObjectId] = []
     for i, item in enumerate(outline[:n]):

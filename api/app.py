@@ -53,6 +53,24 @@ class NewRun(BaseModel):
 @app.on_event("startup")
 async def _startup():
     logger.info("🚀 Starting up Iris Research API...")
+    
+    # Check environment variables
+    logger.info("🔍 Checking environment variables...")
+    api_key = os.getenv("LLM_API_KEY")
+    base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+    model_planner = os.getenv("LLM_MODEL_PLANNER", "gpt-4o-mini")
+    model_writer = os.getenv("LLM_MODEL_WRITER", "gpt-4o-mini")
+    
+    logger.info(f"🔑 LLM_API_KEY: {'✅ Set' if api_key else '❌ Missing'}")
+    logger.info(f"🌐 LLM_BASE_URL: {base_url}")
+    logger.info(f"🧠 LLM_MODEL_PLANNER: {model_planner}")
+    logger.info(f"✍️ LLM_MODEL_WRITER: {model_writer}")
+    
+    if api_key:
+        logger.info(f"🔑 API Key starts with: {api_key[:10]}...")
+    else:
+        logger.error("❌ LLM_API_KEY is not set!")
+    
     try:
         logger.info("📊 Ensuring database indexes...")
         await ensure_indexes()
