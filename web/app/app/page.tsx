@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { ChevronRight, Plus } from "lucide-react"
 import { startRun, getRunStatus } from "@/lib/api"
+import ThinkingNow from "@/components/thinking-now"
+import { API_BASE } from "@/lib/config"
 
 export default function AppPage() {
   const [leftPanelWidth, setLeftPanelWidth] = useState(320)
@@ -46,8 +48,10 @@ export default function AppPage() {
   const overallProgress = runDetails?.progress || 0
 
   return (
-    <AppShell showLeftRail={false}>
-      <div className="flex h-[calc(100vh-4rem)]">
+    <>
+      <ThinkingNow apiBase={API_BASE} runId={currentRunId} />
+      <AppShell showLeftRail={false}>
+        <div className="flex h-[calc(100vh-4rem)]">
         {/* Left Panel - Outline & Progress */}
         <ResizablePanel
           defaultWidth={leftPanelWidth}
@@ -180,5 +184,6 @@ export default function AppPage() {
         </div>
       </div>
     </AppShell>
+    </>
   )
 }

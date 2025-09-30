@@ -3,9 +3,19 @@ import logging
 from typing import List, Dict, Any
 from bson import ObjectId
 from models.db import db
-from services import llm, search, extract
+from services import llm, search, extract, live
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+def _domain(u: str) -> str:
+    try:
+        return urlparse(u).hostname or ""
+    except Exception:
+        return ""
+
+def _short(s: str, n: int = 64) -> str:
+    return s if len(s) <= n else s[: n - 1] + "…"
 
 def _parse_quality_score(quality):
     """Parse quality score from various formats (string or numeric) to float."""
@@ -40,6 +50,7 @@ async def start_run_task(run_id: str):
     
     logger.info(f"📋 Found run, updating status to 'planning'...")
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"planning"}})
+    await live.set_live(run_id, "planning", "Planning outline…")
 
     project = await db().projects.find_one({"_id": run["projectId"]})
     topic = project.get("title","")
@@ -71,6 +82,7 @@ async def start_run_task(run_id: str):
 
     logger.info("🏃 Updating run status to 'running'...")
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"running"}})
+    await live.set_live(run_id, "outline", f"Outline ready ({len(oi_ids)} sections)")
 
     # process each outline item
     cfg = run.get("config", {})
@@ -83,6 +95,7 @@ async def start_run_task(run_id: str):
         await _work_outline_item(oi_id, R, TOP, KEEP)
 
     # aggregate
+    await live.set_live(run_id, "aggregate", "Assembling final report…")
     paras = db().paragraphs.find({"runId": run["_id"]}).sort("idx", 1)
     paragraphs = [p async for p in paras]
     md = await llm.aggregate_report(topic, paragraphs)
@@ -94,6 +107,7 @@ async def start_run_task(run_id: str):
         "summaryMd": ""
     })
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"done"}})
+    await live.set_live(run_id, "done", "Done.")
 
 async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
     oi = await db().outlineItems.find_one({"_id": oi_id})
@@ -105,6 +119,7 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
 
     for r in range(1, R+1):
         q = await llm.propose_query(oi["brief"], seen_urls)
+        await live.set_live(oi["runId"], "search", f'Searching: "{_short(q.get("query",""), 48)}" (round {r})', {"outlineItemId": str(oi_id)})
         await db().searchQueries.insert_one({
             "outlineItemId": oi_id,
             "round": r,
@@ -125,7 +140,9 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
                 doc["score"] = 0.0
                 await db().sources.insert_one(doc)
                 pages.append(doc)
+                await live.set_live(oi["runId"], "fetch", f'Looking at {_short(res.get("title","Untitled"), 48)} ({_domain(url)})', {"url": url})
         notes = await llm.reflect(oi["brief"], [p.get("text","")[:500] for p in pages])
+        await live.set_live(oi["runId"], "reflect", "Analyzing gaps…", {"round": r})
         nxt = notes.get("next_query")
         if nxt:  # optional second pass tweak
             results2 = await search.web_search(nxt, TOP//2) or []
@@ -152,6 +169,7 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
     # cap and write paragraph
     kept_pages = kept_pages[:KEEP]
     await db().outlineItems.update_one({"_id": oi_id}, {"$set":{"status":"drafting"}})
+    await live.set_live(oi["runId"], "draft", f'Writing section {oi["idx"]}…')
     para = await llm.write_paragraph(oi["brief"], kept_pages)
     # Convert numeric keys to string keys for MongoDB compatibility
     citations = para.get("citations", {})
@@ -166,6 +184,7 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
         "quality": _parse_quality_score(para.get("quality", 0.0))
     })
     await db().outlineItems.update_one({"_id": oi_id}, {"$set":{"status":"done"}})
+    await live.set_live(oi["runId"], "section", f'Section {oi["idx"]} done')
 
 # --- Public helpers for endpoints ---
 async def get_run_progress(run_id: str, user_sub: str):

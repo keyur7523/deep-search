@@ -3,9 +3,11 @@ import logging
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from bson import ObjectId
 from dotenv import load_dotenv
+import json
 from models.db import db, ensure_indexes
 from services.s3util import presign_put_url
 from logic.research import start_run_task, get_run_progress, get_outline, get_report
@@ -48,6 +50,16 @@ class User(BaseModel):
 async def get_user(request: Request) -> User:
     # TODO: replace with JWT validation. For now, a static demo user is used.
     return User(sub="demo-user")
+
+def _ser_live(doc):
+    if not doc: return {}
+    out = dict(doc)
+    out["_id"] = str(out.get("_id",""))
+    out["runId"] = str(out["runId"])
+    # ts is datetime; serialize ISO
+    if "ts" in out:
+        out["ts"] = out["ts"].isoformat()
+    return out
 
 class NewProject(BaseModel):
     title: str
@@ -167,6 +179,34 @@ async def run_report(run_id: str, user: User = Depends(get_user)):
     rep = await get_report(run_id, user.sub)
     if not rep: raise HTTPException(404, "report not ready")
     return rep
+
+@app.get("/runs/{run_id}/live/stream")
+async def live_stream(run_id: str):
+    rid = ObjectId(run_id)
+    async def gen():
+        # send current snapshot
+        cur = await db().liveStatus.find_one({"runId": rid})
+        if cur:
+            yield f"data: {json.dumps(_ser_live(cur))}\n\n"
+        # try change streams; fallback to polling
+        try:
+            pipeline=[{"$match":{"fullDocument.runId": rid}}]
+            async with db().liveStatus.watch(pipeline=pipeline, full_document="updateLookup") as cs:
+                async for ch in cs:
+                    yield f"data: {json.dumps(_ser_live(ch['fullDocument']))}\n\n"
+        except Exception:
+            last_iso = cur["ts"].isoformat() if cur and "ts" in cur else None
+            while True:
+                doc = await db().liveStatus.find_one({"runId": rid})
+                if doc and (not last_iso or doc["ts"].isoformat() != last_iso):
+                    last_iso = doc["ts"].isoformat()
+                    yield f"data: {json.dumps(_ser_live(doc))}\n\n"
+                else:
+                    yield ": keep-alive\n\n"
+                await asyncio.sleep(1.0)
+
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 # --- S3 presign ---
 @app.get("/s3/presign")

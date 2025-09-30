@@ -58,6 +58,11 @@ async def ensure_indexes():
         await database.runs.create_index([("projectId", 1), ("createdAt", -1)])
         logger.info("✅ Runs indexes created")
         
+        logger.info("📡 Creating liveStatus collection indexes...")
+        await database.liveStatus.create_index([("runId", 1)], unique=True)
+        await database.liveStatus.create_index("ts", expireAfterSeconds=1800)
+        logger.info("✅ LiveStatus indexes created")
+        
         logger.info("🎉 All database indexes created successfully!")
         
     except Exception as e:
