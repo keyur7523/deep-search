@@ -42,7 +42,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-logger.info(f"🌐 CORS origins configured: {origins}")
+logger.info(f"CORS origins configured: {origins}")
 
 class User(BaseModel):
     sub: str
@@ -179,6 +179,29 @@ async def run_report(run_id: str, user: User = Depends(get_user)):
     rep = await get_report(run_id, user.sub)
     if not rep: raise HTTPException(404, "report not ready")
     return rep
+
+@app.get("/runs")
+async def list_runs(user: User = Depends(get_user), limit: int = Query(5, ge=1, le=20)):
+    """List recent runs for the user"""
+    # For now, get all runs since userId filtering isn't working
+    runs_cursor = db().runs.find().sort("createdAt", -1).limit(limit)
+    runs = []
+    async for run in runs_cursor:
+        # Get topic from project if available
+        topic = "Unknown Topic"
+        if run.get("projectId"):
+            project = await db().projects.find_one({"_id": run["projectId"]})
+            if project:
+                topic = project.get("title", "Unknown Topic")
+        
+        runs.append({
+            "id": str(run["_id"]),
+            "topic": topic,
+            "status": "completed" if run.get("status") == "done" else run.get("status", "unknown"),
+            "progress": run.get("progress", 100 if run.get("status") == "done" else 0),
+            "createdAt": run.get("createdAt"),
+        })
+    return {"runs": runs}
 
 @app.get("/runs/{run_id}/live/stream")
 async def live_stream(run_id: str):

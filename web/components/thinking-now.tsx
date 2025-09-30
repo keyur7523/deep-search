@@ -20,7 +20,7 @@ export default function ThinkingNow({ apiBase, runId }:{ apiBase:string; runId:s
   if (!m) return null;
 
   return (
-    <div className="fixed top-4 right-4 z-50 flex items-center rounded-2xl border border-border bg-white/90 backdrop-blur px-3 py-2 shadow-sm text-sm">
+    <div className="fixed top-4 right-4 z-[9999] flex items-center rounded-2xl border border-border bg-white/90 backdrop-blur px-3 py-2 shadow-sm text-sm">
       {m.kind !== "done" ? (
         <svg className="mr-2 h-4 w-4 animate-spin" viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" opacity=".2"/>

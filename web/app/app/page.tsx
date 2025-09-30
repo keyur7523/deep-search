@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import useSWR from "swr"
 import { AppShell } from "@/components/app-shell"
 import { ResizablePanel } from "@/components/resizable-panel"
@@ -14,13 +14,29 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { ChevronRight, Plus } from "lucide-react"
-import { startRun, getRunStatus } from "@/lib/api"
+import { startRun, getRunStatus, getRecentRuns } from "@/lib/api"
 import ThinkingNow from "@/components/thinking-now"
 import { API_BASE } from "@/lib/config"
 
 export default function AppPage() {
   const [leftPanelWidth, setLeftPanelWidth] = useState(320)
   const [currentRunId, setCurrentRunId] = useState<string | null>(null)
+
+  // Load the most recent run on page load
+  useEffect(() => {
+    const loadRecentRun = async () => {
+      try {
+        const recentRuns = await getRecentRuns(1)
+        if (recentRuns.length > 0 && recentRuns[0].status === "completed") {
+          setCurrentRunId(recentRuns[0].id)
+        }
+      } catch (error) {
+        console.error("Failed to load recent runs:", error)
+      }
+    }
+    
+    loadRecentRun()
+  }, [])
 
   const {
     data: runDetails,

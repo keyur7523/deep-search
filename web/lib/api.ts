@@ -143,7 +143,18 @@ export async function getReport(runId: string): Promise<{ content: string; sourc
   
   const data = await response.json()
   return {
-    content: data.content || "# Research Report\n\nContent here...",
+    content: data.markdown || data.content || "# Research Report\n\nContent here...",
     sources: data.sources || [],
   }
+}
+
+export async function getRecentRuns(limit: number = 5): Promise<RunDetails[]> {
+  const response = await fetch(`${API_BASE}/runs?limit=${limit}`)
+  
+  if (!response.ok) {
+    throw new Error(`Failed to get recent runs: ${response.statusText}`)
+  }
+  
+  const data = await response.json()
+  return data.runs || []
 }
