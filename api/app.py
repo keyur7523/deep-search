@@ -63,11 +63,17 @@ async def _startup():
     
     logger.info("🎉 Iris Research API startup complete!")
 
+# --- Root and Health ---
 @app.get("/")
 async def root():
-    return {"service": "Deep Research API", "health": "/health"}
+    return {
+        "message": "Iris Research API", 
+        "version": "0.1.0",
+        "status": "running",
+        "docs": "/docs",
+        "health": "/health"
+    }
 
-# --- Health ---
 @app.get("/health")
 async def health():
     return {"ok": True}
