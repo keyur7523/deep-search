@@ -1,6 +1,6 @@
 services:
 - type: web
-  name: iris-api
+  name: deep-search-api
   env: python
   rootDir: api
   buildCommand: pip install -r requirements.txt
@@ -11,7 +11,7 @@ services:
   - key: MONGODB_URI
     sync: false
   - key: MONGODB_DB
-    value: iris
+    value: deep-search
   - key: AWS_ACCESS_KEY_ID
     sync: false
   - key: AWS_SECRET_ACCESS_KEY
@@ -34,3 +34,11 @@ services:
     sync: false
   - key: BRAVE_API_KEY
     sync: false
+  - key: MAX_PARAGRAPHS
+    value: 6
+  - key: ROUNDS_PER_PARAGRAPH
+    value: 2
+  - key: RESULTS_PER_ROUND
+    value: 8
+  - key: KEEP_PER_PARAGRAPH
+    value: 6
