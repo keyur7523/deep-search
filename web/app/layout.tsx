@@ -17,7 +17,7 @@ export const metadata = {
   description: "AI-powered research platform for comprehensive topic exploration",
   generator: 'keyurdev',
   icons: {
-    icon: '/placeholder-logo.svg',
+    icon: '/logo.svg',
   },
 }
 

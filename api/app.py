@@ -23,8 +23,16 @@ logger.info("Environment variables loaded")
 app = FastAPI(title="Deep Research API", version="0.1.0")
 logger.info("FastAPI app created")
 
-# Allow localhost for development
-origins = [o.strip() for o in os.getenv("WEB_ORIGINS", "*").split(",")]
+# Allow localhost for development and production Vercel URL
+origins = [
+    "http://localhost:3000",
+    "http://localhost:3001", 
+    "http://localhost:3002",
+    "http://localhost:3003",
+    "https://deep-search-ruby.vercel.app",
+    "https://deep-search.vercel.app",  # Alternative Vercel URL
+    *[o.strip() for o in os.getenv("WEB_ORIGINS", "").split(",") if o.strip()]
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,          # e.g. ["http://localhost:3001", "http://localhost:3000"]
@@ -32,7 +40,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-logger.info(f"CORS middleware configured with origins: {os.getenv('WEB_ORIGIN', '*')}")
+logger.info(f"🌐 CORS origins configured: {origins}")
 
 class User(BaseModel):
     sub: str
