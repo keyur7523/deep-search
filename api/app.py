@@ -23,9 +23,10 @@ logger.info("Environment variables loaded")
 app = FastAPI(title="Iris Research API", version="0.1.0")
 logger.info("FastAPI app created")
 
+origins = [o.strip() for o in os.getenv("WEB_ORIGINS", "*").split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("WEB_ORIGIN", "*")],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,6 +62,10 @@ async def _startup():
         logger.warning("⚠️ Continuing startup despite index error...")
     
     logger.info("🎉 Iris Research API startup complete!")
+
+@app.get("/")
+async def root():
+    return {"service": "Deep Research API", "health": "/health"}
 
 # --- Health ---
 @app.get("/health")
