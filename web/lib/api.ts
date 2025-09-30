@@ -90,29 +90,17 @@ export async function startRun(data: {
   }
 }
 
-export async function getRunStatus(runId: string): Promise<RunDetails> {
+export async function getRunStatus(runId: string): Promise<{status: string, progress: number}> {
   const response = await fetch(`${API_BASE}/runs/${runId}/status`)
   
   if (!response.ok) {
     throw new Error(`Failed to get run status: ${response.statusText}`)
   }
   
-  const data = await response.json()
-  
-  // Transform the backend response to match frontend interface
-  return {
-    id: data.id || runId,
-    topic: data.topic || "Research Topic",
-    status: data.status || "running",
-    progress: data.progress || 0,
-    outline: data.outline || [],
-    sources: data.sources || [],
-    notes: data.notes || [],
-    draft: data.draft || "",
-  }
+  return await response.json()
 }
 
-export async function streamOutline(runId: string): Promise<OutlineItemData[]> {
+export async function getOutline(runId: string): Promise<OutlineItemData[]> {
   const response = await fetch(`${API_BASE}/runs/${runId}/outline`)
   
   if (!response.ok) {
@@ -134,7 +122,7 @@ export async function listSources(runId: string): Promise<Source[]> {
   return data.sources || []
 }
 
-export async function getReport(runId: string): Promise<{ content: string; sources: Source[] }> {
+export async function getReport(runId: string): Promise<{ markdown: string }> {
   const response = await fetch(`${API_BASE}/runs/${runId}/report`)
   
   if (!response.ok) {
@@ -142,10 +130,18 @@ export async function getReport(runId: string): Promise<{ content: string; sourc
   }
   
   const data = await response.json()
-  return {
-    content: data.markdown || data.content || "# Research Report\n\nContent here...",
-    sources: data.sources || [],
+  return data
+}
+
+export async function getParagraphs(runId: string): Promise<Array<{draftMd: string, idx: number, quality: number, citations: Record<string, any>}>> {
+  const response = await fetch(`${API_BASE}/runs/${runId}/paragraphs`)
+  
+  if (!response.ok) {
+    throw new Error(`Failed to get paragraphs: ${response.statusText}`)
   }
+  
+  const data = await response.json()
+  return data.paragraphs || []
 }
 
 export async function getRecentRuns(limit: number = 5): Promise<RunDetails[]> {

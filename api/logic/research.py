@@ -95,23 +95,32 @@ async def start_run_task(run_id: str):
         await _work_outline_item(oi_id, R, TOP, KEEP)
 
     # aggregate
-    await live.set_live(run_id, "aggregate", "Assembling final report…")
-    paras = db().paragraphs.find({"runId": run["_id"]}).sort("idx", 1)
-    paragraphs = [p async for p in paras]
-    md = await llm.aggregate_report(topic, paragraphs)
+    try:
+        await live.set_live(run_id, "aggregate", "Assembling final report…")
+        paras = db().paragraphs.find({"runId": run["_id"]}).sort("idx", 1)
+        paragraphs = [p async for p in paras]
+        md = await llm.aggregate_report(topic, paragraphs)
 
-    await db().reports.insert_one({
-        "runId": run["_id"],
-        "markdown": md,
-        "toc": [],
-        "summaryMd": ""
-    })
-    await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"done"}})
-    await live.set_live(run_id, "done", "Done.")
+        await db().reports.insert_one({
+            "runId": run["_id"],
+            "markdown": md,
+            "toc": [],
+            "summaryMd": "",
+            "createdAt": asyncio.get_event_loop().time()
+        })
+        await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"done"}})
+        await live.set_live(run_id, "done", "Done.")
+    except Exception as e:
+        logger.error(f"❌ Error during final aggregation: {e}")
+        await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"error", "error": str(e)}})
+        await live.set_live(run_id, "error", f"Error: {str(e)}")
+        raise
 
 async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int):
     oi = await db().outlineItems.find_one({"_id": oi_id})
     if not oi: return
+    
+    # Update status to searching
     await db().outlineItems.update_one({"_id": oi_id}, {"$set":{"status":"searching"}})
 
     seen_urls: list[str] = []
@@ -210,5 +219,8 @@ async def get_outline(run_id: str, user_sub: str):
 async def get_report(run_id: str, user_sub: str):
     rid = ObjectId(run_id)
     rep = await db().reports.find_one({"runId": rid})
+    if not rep:
+        # Legacy fallback for old reports with wrong key
+        rep = await db().reports.find_one({"RunId": rid})
     if not rep: return None
     return {"markdown": rep.get("markdown","")}

@@ -14,13 +14,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { ChevronRight, Plus } from "lucide-react"
-import { startRun, getRunStatus, getRecentRuns } from "@/lib/api"
+import { startRun, getRunStatus, getOutline, getReport, getRecentRuns } from "@/lib/api"
 import ThinkingNow from "@/components/thinking-now"
 import { API_BASE } from "@/lib/config"
 
 export default function AppPage() {
   const [leftPanelWidth, setLeftPanelWidth] = useState(320)
   const [currentRunId, setCurrentRunId] = useState<string | null>(null)
+  const [runStatus, setRunStatus] = useState<{status: string, progress: number} | null>(null)
+  const [outline, setOutline] = useState<any[]>([])
+  const [finalMarkdown, setFinalMarkdown] = useState<string>("")
 
   // Load the most recent run on page load
   useEffect(() => {
@@ -38,30 +41,72 @@ export default function AppPage() {
     loadRecentRun()
   }, [])
 
-  const {
-    data: runDetails,
-    isLoading,
-    mutate,
-  } = useSWR(currentRunId ? ["run", currentRunId] : null, () => (currentRunId ? getRunStatus(currentRunId) : null), {
-    refreshInterval: (data) => {
-      // Poll every 2 seconds if running, stop if completed
-      return data?.status === "running" ? 2000 : 0
-    },
-    revalidateOnFocus: false,
-  })
+  // Poll status every 2 seconds
+  useEffect(() => {
+    if (!currentRunId) return
+    
+    const pollStatus = async () => {
+      try {
+        const status = await getRunStatus(currentRunId)
+        setRunStatus(status)
+        
+        // If done, fetch the report
+        if (status.status === "done") {
+          try {
+            const report = await getReport(currentRunId)
+            setFinalMarkdown(report.markdown)
+          } catch (error) {
+            console.error("Failed to fetch report:", error)
+          }
+        }
+      } catch (error) {
+        console.error("Failed to poll status:", error)
+      }
+    }
+
+    // Initial poll
+    pollStatus()
+    
+    // Set up interval
+    const interval = setInterval(pollStatus, 2000)
+    return () => clearInterval(interval)
+  }, [currentRunId])
+
+  // Poll outline every 3 seconds
+  useEffect(() => {
+    if (!currentRunId) return
+    
+    const pollOutline = async () => {
+      try {
+        const outlineData = await getOutline(currentRunId)
+        setOutline(outlineData)
+      } catch (error) {
+        console.error("Failed to fetch outline:", error)
+      }
+    }
+
+    // Initial poll
+    pollOutline()
+    
+    // Set up interval
+    const interval = setInterval(pollOutline, 3000)
+    return () => clearInterval(interval)
+  }, [currentRunId])
 
   const handleTopicSubmit = async (data: { topic: string; maxParagraphs: number; roundsPerParagraph: number }) => {
     console.log("Starting new research:", data)
     try {
       const run = await startRun(data)
       setCurrentRunId(run.id)
-      mutate() // Trigger revalidation
+      setRunStatus({ status: "running", progress: 0 })
+      setOutline([])
+      setFinalMarkdown("")
     } catch (error) {
       console.error("Failed to start run:", error)
     }
   }
 
-  const overallProgress = runDetails?.progress || 0
+  const overallProgress = runStatus?.progress || 0
 
   return (
     <>
@@ -101,15 +146,22 @@ export default function AppPage() {
               <Separator />
 
               {/* Outline */}
-              {runDetails?.outline && (
+              {outline && outline.length > 0 && (
                 <div>
                   <h3 className="text-sm font-semibold text-foreground mb-3">Outline</h3>
                   <div className="space-y-2">
-                    {runDetails.outline.map((item) => (
+                    {outline.map((item) => (
                       <OutlineItem
-                        key={item.id}
-                        item={item}
-                        onClick={() => console.log("[v0] Clicked item:", item.id)}
+                        key={item._id}
+                        item={{
+                          id: item._id,
+                          index: item.idx,
+                          title: item.heading,
+                          brief: item.brief,
+                          progress: item.status === "done" ? 100 : item.status === "drafting" ? 80 : item.status === "searching" ? 40 : 0,
+                          status: item.status
+                        }}
+                        onClick={() => console.log("[v0] Clicked item:", item._id)}
                       />
                     ))}
                   </div>
@@ -118,11 +170,14 @@ export default function AppPage() {
             </div>
 
             {/* Progress bar at bottom */}
-            {runDetails && (
+            {runStatus && (
               <div className="p-4 border-t border-border">
                 <ProgressStrip
                   overall={overallProgress}
-                  items={runDetails.outline.map((item) => ({ id: item.id, progress: item.progress || 0 }))}
+                  items={outline.map((item) => ({ 
+                    id: item._id, 
+                    progress: item.status === "done" ? 100 : item.status === "drafting" ? 80 : item.status === "searching" ? 40 : 0 
+                  }))}
                 />
               </div>
             )}
@@ -156,43 +211,37 @@ export default function AppPage() {
             </div>
 
             <TabsContent value="sources" className="flex-1 m-0 p-6">
-              {isLoading ? (
-                <div className="text-center py-12 text-muted-foreground">Loading sources...</div>
-              ) : runDetails?.sources && runDetails.sources.length > 0 ? (
-                <SourcesTable sources={runDetails.sources} />
-              ) : (
-                <div className="text-center py-12 text-muted-foreground">
-                  No sources yet. Start a research run to see sources.
-                </div>
-              )}
+              <div className="text-center py-12 text-muted-foreground">
+                Sources will be available in a future update.
+              </div>
             </TabsContent>
 
             <TabsContent value="notes" className="flex-1 m-0 p-6">
-              {isLoading ? (
-                <div className="text-center py-12 text-muted-foreground">Loading notes...</div>
-              ) : runDetails?.notes && runDetails.notes.length > 0 ? (
-                <NotesLog notes={runDetails.notes} />
-              ) : (
-                <div className="text-center py-12 text-muted-foreground">
-                  No notes yet. Reflections will appear here during research.
-                </div>
-              )}
+              <div className="text-center py-12 text-muted-foreground">
+                Notes will be available in a future update.
+              </div>
             </TabsContent>
 
             <TabsContent value="draft" className="flex-1 m-0 p-6">
-              {isLoading ? (
-                <div className="text-center py-12 text-muted-foreground">Loading draft...</div>
-              ) : runDetails?.draft ? (
+              {finalMarkdown ? (
                 <MarkdownViewer
-                  content={runDetails.draft}
+                  content={finalMarkdown}
                   onExportMd={() => console.log("Export markdown")}
                   onExportPdf={() => console.log("Export PDF")}
                   onRegenerate={(id) => console.log("Regenerate paragraph:", id)}
                   onAddHint={(id, hint) => console.log("Add hint:", id, hint)}
                 />
+              ) : runStatus?.status === "done" ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  Report is ready but couldn't be loaded. Check console for errors.
+                </div>
+              ) : runStatus?.status === "running" ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  Research in progress... Final report will appear here when complete.
+                </div>
               ) : (
                 <div className="text-center py-12 text-muted-foreground">
-                  No draft yet. Content will appear as research progresses.
+                  No report yet. Start a research run to generate content.
                 </div>
               )}
             </TabsContent>

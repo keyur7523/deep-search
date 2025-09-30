@@ -180,6 +180,26 @@ async def run_report(run_id: str, user: User = Depends(get_user)):
     if not rep: raise HTTPException(404, "report not ready")
     return rep
 
+@app.get("/runs/{run_id}/paragraphs")
+async def run_paragraphs(run_id: str, user: User = Depends(get_user)):
+    """Get individual paragraphs for a run"""
+    try:
+        rid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(400, "bad run id")
+    
+    cur = db().paragraphs.find({"runId": rid}).sort("idx", 1)
+    paragraphs = []
+    async for p in cur:
+        paragraphs.append({
+            "_id": str(p["_id"]),
+            "idx": p["idx"],
+            "draftMd": p.get("draftMd", ""),
+            "quality": p.get("quality", 0.0),
+            "citations": p.get("citations", {})
+        })
+    return {"paragraphs": paragraphs}
+
 @app.get("/runs")
 async def list_runs(user: User = Depends(get_user), limit: int = Query(5, ge=1, le=20)):
     """List recent runs for the user"""
