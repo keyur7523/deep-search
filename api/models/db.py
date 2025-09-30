@@ -64,8 +64,8 @@ async def ensure_indexes():
         logger.info("✅ LiveStatus indexes created")
         
         logger.info("💬 Creating researchMessages collection indexes...")
-        await database.researchMessages.create_index([("runId", 1), ("timestamp", 1)])
-        await database.researchMessages.create_index("timestamp")
+        await database.researchMessages.create_index([("runId", 1), ("t", 1)])
+        await database.researchMessages.create_index([("runId", 1), ("_id", 1)])
         logger.info("✅ ResearchMessages indexes created")
         
         logger.info("🎉 All database indexes created successfully!")

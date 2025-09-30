@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+import json
 from pydantic import BaseModel, Field
 from bson import ObjectId
 from dotenv import load_dotenv
@@ -244,6 +245,57 @@ async def get_thread(thread_id: str, user: User = Depends(get_user)):
     if not thread:
         raise HTTPException(404, "thread not found")
     return thread
+
+def _ser(m):
+    out = dict(m); out["_id"] = str(out["_id"]); out["runId"] = str(out["runId"])
+    if "t" in out: out["t"] = out["t"].isoformat()
+    return out
+
+@app.get("/runs/{run_id}/events/stream")
+async def events_stream(run_id: str):
+    try:
+        rid = ObjectId(run_id)
+    except Exception as e:
+        logger.error(f"Invalid run_id: {run_id}")
+        raise HTTPException(400, "Invalid run ID")
+    
+    async def gen():
+        # backlog
+        cursor = db().researchMessages.find({"runId": rid}).sort("t", 1)
+        async for m in cursor:
+            yield f"data: {json.dumps(_ser(m))}\n\n"
+        # live: change streams if available, else poll
+        try:
+            pipeline = [{"$match": {"fullDocument.runId": rid}}]
+            async with db().researchMessages.watch(pipeline=pipeline, full_document="updateLookup") as cs:
+                async for ch in cs:
+                    yield f"data: {json.dumps(_ser(ch['fullDocument']))}\n\n"
+        except Exception:
+            last_id = None
+            while True:
+                q = {"runId": rid}
+                if last_id: q["_id"] = {"$gt": last_id}
+                cursor = db().researchMessages.find(q).sort("_id", 1)
+                async for m in cursor:
+                    last_id = m["_id"]; yield f"data: {json.dumps(_ser(m))}\n\n"
+                yield ": keep-alive\n\n"
+                await asyncio.sleep(1.0)
+    headers = {"Cache-Control":"no-cache","Connection":"keep-alive"}
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+
+@app.get("/runs/{run_id}/messages")
+async def list_messages(run_id: str, since_id: str|None = Query(None, alias="sinceId")):
+    try:
+        rid = ObjectId(run_id)
+        q = {"runId": rid}
+        if since_id: 
+            q["_id"] = {"$gt": ObjectId(since_id)}
+        cur = db().researchMessages.find(q).sort("_id", 1).limit(500)
+        out = [ _ser(m) async for m in cur ]
+        return {"items": out}
+    except Exception as e:
+        logger.error(f"Error fetching messages for run {run_id}: {e}")
+        return {"items": []}
 
 @app.get("/runs/{run_id}/live/stream")
 async def live_stream(run_id: str):

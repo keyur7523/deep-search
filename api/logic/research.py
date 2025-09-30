@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from bson import ObjectId
 from models.db import db
 from services import llm, search, extract, live
+from services.messages import emit_msg
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -53,14 +54,14 @@ async def start_run_task(run_id: str):
     topic = project.get("title", "") if project else ""
     
     # Add user message
-    await add_research_message(run_id, "user", f"Research '{topic}'")
+    await emit_msg(run_id, role="user", kind="info", text=f"Research '{topic}'")
     
     logger.info(f"📋 Found run, updating status to 'planning'...")
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"planning"}})
     await live.set_live(run_id, "planning", "Planning outline…")
     
     # Add system message
-    await add_research_message(run_id, "system", f"🚀 Starting comprehensive research on '{topic}'\nI'll create a detailed outline and gather authoritative sources.")
+    await emit_msg(run_id, role="system", kind="status", text="planning outline")
 
     project = await db().projects.find_one({"_id": run["projectId"]})
     topic = project.get("title","")
@@ -69,22 +70,25 @@ async def start_run_task(run_id: str):
     logger.info(f"📚 Research topic: '{topic}' with {n} max paragraphs")
     logger.info("🧠 Planning research outline with LLM...")
     
-    # Add progress message
-    await add_research_message(run_id, "progress", f"📋 Planning outline with {n} sections...")
-    
     try:
+        logger.info("🔧 Calling LLM plan_outline...")
+        # Test environment loading
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+        key = os.getenv("LLM_API_KEY", "")
+        logger.info(f"🔧 Environment check: LLM_API_KEY length = {len(key)}")
+        
         outline = await llm.plan_outline(topic, n)
-        logger.info(f"📋 Generated outline with {len(outline)} items")
+        logger.info(f"📋 Generated outline with {len(outline)} items: {outline}")
         
         # Add outline message
-        outline_text = "✅ Created research outline:\n"
-        for i, item in enumerate(outline[:n]):
-            outline_text += f"  {i+1}. {item.get('heading', f'Section {i+1}')}\n"
-        await add_research_message(run_id, "outline", outline_text)
+        outline_text = f"outline ready ({len(outline)} sections)"
+        await emit_msg(run_id, role="system", kind="status", text=outline_text)
         
     except Exception as e:
         logger.error(f"❌ LLM API Error during outline planning: {e}")
-        await add_research_message(run_id, "error", f"❌ Failed to plan outline: {str(e)}")
+        await emit_msg(run_id, role="system", kind="error", text=f"failed to plan outline: {str(e)}")
         await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"failed", "error": str(e)}})
         return
     
@@ -106,7 +110,7 @@ async def start_run_task(run_id: str):
     await live.set_live(run_id, "outline", f"Outline ready ({len(oi_ids)} sections)")
 
     # Add research phase message
-    await add_research_message(run_id, "system", f"🔍 Starting research phase...\nI'll gather sources and analyze content for each section.")
+    await emit_msg(run_id, role="system", kind="status", text="starting research phase")
 
     # process each outline item
     cfg = run.get("config", {})
@@ -116,11 +120,11 @@ async def start_run_task(run_id: str):
     KEEP = int(cfg.get("keepPerParagraph", 6))
 
     for oi_id in oi_ids:
-        await _work_outline_item(oi_id, R, TOP, KEEP, run_id)
+        await _work_outline_item(oi_id, R, TOP, KEEP, run_id, cfg)
 
     # aggregate
     await live.set_live(run_id, "aggregate", "Assembling final report…")
-    await add_research_message(run_id, "progress", f"🔄 Assembling final report from {len(oi_ids)} sections...")
+    await emit_msg(run_id, role="system", kind="status", text="assembling final report")
     
     paras = [p async for p in db().paragraphs.find({"runId": run["_id"]}).sort("idx", 1)]
     try:
@@ -137,16 +141,9 @@ async def start_run_task(run_id: str):
     await live.set_live(run_id, "done", "Done.")
     
     # Add completion message
-    total_sources = await db().sources.count_documents({"runId": run["_id"]})
-    avg_quality = sum(p.get("quality", 0) for p in paras) / len(paras) if paras else 0
-    await add_research_message(run_id, "complete", f"🎉 Research completed!\n\n📊 Summary:\n• {len(paras)} sections written\n• {total_sources} sources analyzed\n• Average quality: {avg_quality:.1f}/10\n• Search provider: {cfg.get('searchProvider', 'hybrid')}", {
-        "sections": len(paras),
-        "totalSources": total_sources,
-        "qualityScore": avg_quality,
-        "searchProvider": cfg.get("searchProvider", "hybrid")
-    })
+    await emit_msg(run_id, role="system", kind="complete", text="done")
 
-async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_id: str):
+async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_id: str, cfg: dict):
     oi = await db().outlineItems.find_one({"_id": oi_id})
     if not oi: return
     
@@ -154,7 +151,7 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_i
     await db().outlineItems.update_one({"_id": oi_id}, {"$set":{"status":"searching"}})
     
     # Add section start message
-    await add_research_message(run_id, "progress", f"🔍 Section {oi['idx']}: {oi['heading']}\nStarting research...")
+    await emit_msg(run_id, role="system", kind="status", text=f"section {oi['idx']}: {oi['heading']}")
 
     seen_urls: list[str] = []
     kept_pages: list[Dict[str,Any]] = []
@@ -164,12 +161,10 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_i
         await live.set_live(oi["runId"], "search", f'Searching: "{_short(q.get("query",""), 48)}" (round {r})', {"outlineItemId": str(oi_id)})
         
         # Add search message
-        await add_research_message(run_id, "search", f"🔍 Searching: \"{q.get('query', '')}\" (Round {r})", {
-            "section": oi["idx"],
-            "sectionTitle": oi["heading"],
+        logger.info(f"📝 Emitting search message for query: {q.get('query','')}")
+        await emit_msg(run_id, role="assistant", kind="query", text=q.get("query", ""), meta={
             "round": r,
-            "query": q.get("query", ""),
-            "rationale": q.get("rationale", "")
+            "idx": oi["idx"]
         })
         
         await db().searchQueries.insert_one({
@@ -179,7 +174,16 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_i
             "rationale": q.get("rationale","")
         })
         provider = cfg.get("searchProvider", "hybrid")
+        logger.info(f"🔍 Searching with provider '{provider}' for query: {q.get('query','')}")
         results = await search.web_search(q.get("query",""), TOP, provider) or []
+        logger.info(f"📄 Found {len(results)} search results")
+        
+        # Add search results message
+        await emit_msg(run_id, role="assistant", kind="fetch", text=f"Found {len(results)} sources", meta={
+            "sources": len(results),
+            "round": r
+        })
+        
         pages = []
         for res in results:
             url = res.get("url","")
@@ -222,23 +226,25 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_i
     # cap and write paragraph
     kept_pages = kept_pages[:KEEP]
     
-    # Add source summary message
-    academic_sources = sum(1 for p in kept_pages if p.get("type") == "academic")
-    web_sources = len(kept_pages) - academic_sources
-    await add_research_message(run_id, "source", f"📄 Found {len(kept_pages)} sources ({academic_sources} academic, {web_sources} web)\nAnalyzing content...", {
-        "section": oi["idx"],
-        "sources": len(kept_pages),
-        "academic": academic_sources,
-        "web": web_sources
+    # Add reflection message
+    await emit_msg(run_id, role="assistant", kind="reflect", text=notes.get("notes",""), meta={
+        "round": r
     })
     
     await db().outlineItems.update_one({"_id": oi_id}, {"$set": {"status": "drafting"}})
     await live.set_live(oi["runId"], "draft", f'Writing section {oi["idx"]}…')
     
     # Add drafting message
-    await add_research_message(run_id, "progress", f"✍️ Writing Section {oi['idx']}: {oi['heading']}")
+    await emit_msg(run_id, role="assistant", kind="draft", text=f"writing section {oi['idx']}")
     
-    para = await llm.write_paragraph(oi["brief"], kept_pages)
+    logger.info(f"🔧 Writing paragraph for section {oi['idx']} with {len(kept_pages)} sources")
+    try:
+        para = await llm.write_paragraph(oi["brief"], kept_pages)
+        logger.info(f"🔧 Generated paragraph: {para.get('draftMd', '')[:100]}...")
+    except Exception as e:
+        logger.error(f"❌ Paragraph generation failed: {str(e)}")
+        para = {"draftMd": f"Error generating paragraph: {str(e)}", "citations": {}, "quality": 0.0}
+    
     # Convert numeric keys to string keys for MongoDB compatibility
     citations = para.get("citations", {})
     citations_str_keys = {str(k): v for k, v in citations.items()}
@@ -258,12 +264,7 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_i
     await live.set_live(oi["runId"], "section", f'Section {oi["idx"]} done')
     
     # Add completion message
-    await add_research_message(run_id, "result", f"✅ Section {oi['idx']} completed\nQuality: {quality_score:.1f}/10 • {len(citations_str_keys)} citations", {
-        "section": oi["idx"],
-        "sectionTitle": oi["heading"],
-        "quality": quality_score,
-        "citations": len(citations_str_keys)
-    })
+    await emit_msg(run_id, role="system", kind="section", text=f"section {oi['idx']} done")
 
 # --- Public helpers for endpoints ---
 async def get_run_progress(run_id: str, user_sub: str):
@@ -405,15 +406,3 @@ async def get_research_thread(thread_id: str, user_sub: str):
         }
     }
 
-async def add_research_message(run_id: str, msg_type: str, content: str, metadata: dict = None):
-    """Add a research message to the database"""
-    msg_doc = {
-        "runId": ObjectId(run_id),
-        "type": msg_type,
-        "content": content,
-        "timestamp": asyncio.get_event_loop().time(),
-        "metadata": metadata or {},
-        "isStreaming": False
-    }
-    result = await db().researchMessages.insert_one(msg_doc)
-    return str(result.inserted_id)

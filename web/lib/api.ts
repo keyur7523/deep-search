@@ -40,6 +40,7 @@ export async function createProject(name: string): Promise<Project> {
     body: JSON.stringify({
       title: name,
       goal: '',
+      maxParagraphs: 6,
     }),
   })
   
