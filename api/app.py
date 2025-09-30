@@ -1,8 +1,7 @@
 import os, asyncio
 from typing import Any, Dict, List, Optional
-from fastapi import FastAPI, Depends, HTTPException, Body, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from bson import ObjectId
 from dotenv import load_dotenv
@@ -10,10 +9,8 @@ from models.db import db, ensure_indexes
 from services.s3util import presign_put_url
 from logic.research import start_run_task, get_run_progress, get_outline, get_report
 
-# Load environment variables
 load_dotenv()
 
-# --- CORS ---
 app = FastAPI(title="Iris Research API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -23,31 +20,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Auth stub (replace with JWT validation if needed) ---
 class User(BaseModel):
     sub: str
-async def get_user() -> User:
-    # TODO: parse Authorization header for JWT; for now use demo
+
+async def get_user(request: Request) -> User:
+    # TODO: replace with JWT validation. For now, a static demo user is used.
     return User(sub="demo-user")
 
-# --- Pydantic inputs ---
 class NewProject(BaseModel):
     title: str
     goal: str = Field(default="")
     maxParagraphs: int = Field(default=int(os.getenv("MAX_PARAGRAPHS", 6)))
+
 class NewRun(BaseModel):
     rounds: int = Field(default=int(os.getenv("ROUNDS_PER_PARAGRAPH", 2)))
     resultsPerRound: int = Field(default=int(os.getenv("RESULTS_PER_ROUND", 8)))
     keepPerParagraph: int = Field(default=int(os.getenv("KEEP_PER_PARAGRAPH", 6)))
 
-# --- Startup ---
 @app.on_event("startup")
 async def _startup():
     try:
         await ensure_indexes()
     except Exception as e:
-        print(f"Warning: Could not connect to database: {e}")
-        print("Continuing without database connection...")
+        print(f"Startup index error: {e}")
 
 # --- Health ---
 @app.get("/health")
@@ -99,17 +94,6 @@ async def run_outline(run_id: str, user: User = Depends(get_user)):
     items = await get_outline(run_id, user.sub)
     return {"items": items}
 
-@app.get("/outline/{outline_id}/live")
-async def outline_live(outline_id: str, user: User = Depends(get_user)):
-    oi = await db().outlineItems.find_one({"_id": ObjectId(outline_id)})
-    if not oi: raise HTTPException(404, "outline item not found")
-    queries = db().searchQueries.find({"outlineItemId": oi["_id"]}).sort("round", 1)
-    sources = db().sources.find({"outlineItemId": oi["_id"]}).sort("score", -1)
-    return {
-        "outline": {"id": outline_id, "heading": oi["heading"], "brief": oi["brief"], "status": oi.get("status","")},
-        "queries": [ {**q, "_id": str(q["_id"]), "outlineItemId": str(q["outlineItemId"])} async for q in queries ],
-        "sources": [ {**s, "_id": str(s["_id"]), "outlineItemId": str(s["outlineItemId"]), "runId": str(s["runId"])} async for s in sources ],
-    }
 
 @app.get("/runs/{run_id}/report")
 async def run_report(run_id: str, user: User = Depends(get_user)):

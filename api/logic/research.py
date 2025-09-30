@@ -7,23 +7,22 @@ from services import llm, search, extract
 async def start_run_task(run_id: str):
     runs = db().runs
     run = await runs.find_one({"_id": ObjectId(run_id)})
-    if not run: return
+    if not run:
+        return
     await runs.update_one({"_id": run["_id"]}, {"$set":{"status":"planning"}})
 
-    # get project and topic
     project = await db().projects.find_one({"_id": run["projectId"]})
     topic = project.get("title","")
     n = project.get("maxParagraphs", 6)
 
-    # outline
     outline = await llm.plan_outline(topic, n)
     oi_ids: List[ObjectId] = []
     for item in outline[:n]:
         doc = {
             "runId": run["_id"],
-            "idx": item["idx"],
-            "heading": item["heading"],
-            "brief": item["brief"],
+            "idx": item.get("idx", len(oi_ids)+1),
+            "heading": item.get("heading", f"Section {len(oi_ids)+1}"),
+            "brief": item.get("brief", ""),
             "status": "queued"
         }
         res = await db().outlineItems.insert_one(doc)

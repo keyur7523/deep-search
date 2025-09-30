@@ -2,10 +2,8 @@ import os
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Initialize client as None, will be created when needed
 _client = None
 _dbname = os.getenv("MONGODB_DB", "deep-search")
 
@@ -14,14 +12,8 @@ def get_client():
     if _client is None:
         mongodb_uri = os.getenv("MONGODB_URI")
         if not mongodb_uri:
-            raise ValueError("MONGODB_URI environment variable is not set")
-        
-        # Create client with SSL certificate handling for macOS
-        _client = AsyncIOMotorClient(
-            mongodb_uri,
-            tlsCAFile=None,
-            tlsAllowInvalidCertificates=True
-        )
+            raise RuntimeError("MONGODB_URI not set")
+        _client = AsyncIOMotorClient(mongodb_uri, serverSelectionTimeoutMS=5000)
     return _client
 
 def db():
