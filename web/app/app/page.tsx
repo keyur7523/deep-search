@@ -22,6 +22,7 @@ export default function AppPage() {
   const [leftPanelWidth, setLeftPanelWidth] = useState(320)
   const [currentRunId, setCurrentRunId] = useState<string | null>(null)
   const [runStatus, setRunStatus] = useState<{status: string, progress: number} | null>(null)
+  const [progress, setProgress] = useState<number>(0)
   const [outline, setOutline] = useState<any[]>([])
   const [finalMarkdown, setFinalMarkdown] = useState<string>("")
 
@@ -45,52 +46,41 @@ export default function AppPage() {
   useEffect(() => {
     if (!currentRunId) return
     
-    const pollStatus = async () => {
+    const id = currentRunId;
+    const t = setInterval(async () => {
       try {
-        const status = await getRunStatus(currentRunId)
-        setRunStatus(status)
+        const s = await getRunStatus(id);
+        setRunStatus(s);
+        setProgress(s.progress);                 // 0..100
         
-        // If done, fetch the report
-        if (status.status === "done") {
-          try {
-            const report = await getReport(currentRunId)
-            setFinalMarkdown(report.markdown)
-          } catch (error) {
-            console.error("Failed to fetch report:", error)
-          }
+        if (s.status === "done") {
+          clearInterval(t);
+          const r = await getReport(id);
+          setFinalMarkdown(r.markdown);          // render in Draft tab
         }
       } catch (error) {
         console.error("Failed to poll status:", error)
       }
-    }
-
-    // Initial poll
-    pollStatus()
+    }, 2000);
     
-    // Set up interval
-    const interval = setInterval(pollStatus, 2000)
-    return () => clearInterval(interval)
+    return () => clearInterval(t);
   }, [currentRunId])
 
-  // Poll outline every 3 seconds
+  // Poll outline every 2.5 seconds
   useEffect(() => {
     if (!currentRunId) return
     
-    const pollOutline = async () => {
+    const id = currentRunId;
+    const to = setInterval(async () => {
       try {
-        const outlineData = await getOutline(currentRunId)
-        setOutline(outlineData)
+        const o = await getOutline(id);
+        setOutline(o);                     // statuses: queued/searching/drafting/done
       } catch (error) {
         console.error("Failed to fetch outline:", error)
       }
-    }
-
-    // Initial poll
-    pollOutline()
+    }, 2500);
     
-    // Set up interval
-    const interval = setInterval(pollOutline, 3000)
-    return () => clearInterval(interval)
+    return () => clearInterval(to);
   }, [currentRunId])
 
   const handleTopicSubmit = async (data: { topic: string; maxParagraphs: number; roundsPerParagraph: number }) => {
@@ -106,7 +96,7 @@ export default function AppPage() {
     }
   }
 
-  const overallProgress = runStatus?.progress || 0
+  const overallProgress = progress
 
   return (
     <>
