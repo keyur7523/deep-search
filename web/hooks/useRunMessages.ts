@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { openRunEvents, ResearchMsg } from "@/lib/stream";
+import { openRunEvents, ResearchMsg } from "../lib/stream";
 
 export function useRunMessages(apiBase: string, runId: string | null) {
   const [msgs, setMsgs] = useState<ResearchMsg[]>([]);
