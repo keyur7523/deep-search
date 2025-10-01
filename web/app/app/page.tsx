@@ -241,7 +241,7 @@ export default function AppPage() {
                             >
                               {run.status}
                             </Badge>
-                            <span className="text-xs text-muted-foreground">
+                            <span className="text-xs text-muted-foreground" suppressHydrationWarning>
                               {formatDistanceToNow(run.createdAt, { addSuffix: true })}
                             </span>
                           </div>

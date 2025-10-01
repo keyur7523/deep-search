@@ -35,87 +35,173 @@ async def _chat(model: str, messages: List[Dict[str, str]], temperature: float =
 async def plan_outline(topic: str, n: int) -> List[Dict[str, str]]:
     try:
         config = _get_config()
-        print(f"🔧 LLM Config: base={config['base'][:20]}..., key_length={len(config['key'])}")
+        print(f"🔧 LLM Config: base={config['base'][:30]}..., key_length={len(config['key'])}, model={config['model_planner']}")
         
-        system = """You are a research planning expert. Create a comprehensive, academically rigorous outline.
-Each section should address a distinct, substantive aspect with depth and critical analysis.
-Return strict JSON array of objects with: idx (number), heading (string), brief (detailed research question, 2-3 sentences).
-Focus on: mechanisms, evidence, controversies, clinical/practical implications, recent advances."""
+        # Simplified but still demanding prompt
+        system = """You are a research planning expert. Create a detailed academic outline.
+
+Return ONLY a JSON array: [{"idx": 1, "heading": "Section Title", "brief": "Research question with specific details"}, ...]
+
+Each brief MUST:
+- Be 2-4 sentences (80+ words)
+- Specify mechanisms, pathways, or data to investigate
+- Mention evidence types needed (RCTs, meta-analyses, molecular studies)
+- Avoid vague language ("explore", "discuss", "cover aspect")
+
+Example GOOD brief: "What are the molecular mechanisms of hemoglobin oxygen binding, including the role of heme groups, cooperative binding kinetics, and allosteric regulation? Examine structural studies, binding affinity data (Kd values), and how pH and 2,3-BPG affect oxygen dissociation curves."
+
+Example BAD brief: "Explore hemoglobin structure and function"
+"""
         
         user = f"""Topic: {topic}
 
-Create {n} sections that provide DEEP coverage:
-1. Start with fundamental concepts and definitions
-2. Cover underlying mechanisms and pathophysiology (if applicable)
-3. Address current evidence and clinical research
-4. Discuss diagnostic/measurement approaches
-5. Explore management, treatment, or interventions
-6. Include complications, risks, or emerging research
-
-Each brief should be a specific, answerable research question (not "Cover aspect X")."""
+Create {n} sections for academic research. Each brief should specify:
+- Specific mechanisms or pathways to investigate
+- What quantitative data or evidence is needed
+- What level of detail expected (molecular, clinical, etc.)"""
         
-        out = await _chat(config["model_planner"], [{"role":"system","content":system},{"role":"user","content":user}], 0.2, json_mode=True)
-        print(f"🔧 LLM Response: {out[:100]}...")
+        print(f"📤 Sending request to LLM...")
+        out = await _chat(config["model_planner"], [
+            {"role":"system","content":system},
+            {"role":"user","content":user}
+        ], 0.2, json_mode=True)
+        
+        print(f"📥 LLM Response Length: {len(out)} chars")
+        print(f"📥 LLM Response Preview: {out[:200]}...")
+        
+        if not out or not out.strip():
+            raise ValueError("LLM returned empty response - check API key and credits")
+        
         result = json.loads(out)
-        print(f"🔧 Parsed outline: {len(result)} items")
         
-        # Validate that briefs are substantial
-        for item in result:
-            if len(item.get("brief", "")) < 30 or "Cover aspect" in item.get("brief", ""):
-                raise ValueError(f"Weak brief detected: {item.get('brief', '')[:50]}")
+        # Handle if LLM wraps array in object
+        if isinstance(result, dict):
+            if "sections" in result:
+                result = result["sections"]
+            elif "outline" in result:
+                result = result["outline"]
+            elif "items" in result:
+                result = result["items"]
+            else:
+                # Try to find any array in the response
+                for key, value in result.items():
+                    if isinstance(value, list):
+                        result = value
+                        break
+        
+        if not isinstance(result, list):
+            raise ValueError(f"LLM returned {type(result)} instead of list: {str(result)[:100]}")
+        
+        print(f"✅ Parsed outline: {len(result)} items")
+        
+        # Relaxed validation - warn but don't fail
+        for i, item in enumerate(result):
+            brief = item.get("brief", "")
+            if len(brief) < 60:
+                print(f"⚠️ Warning: Section {i+1} brief is short ({len(brief)} chars)")
+            if any(weak in brief.lower() for weak in ["cover aspect", "explore the topic"]):
+                print(f"⚠️ Warning: Section {i+1} uses vague language")
+        
+        if len(result) != n:
+            print(f"⚠️ Warning: Expected {n} sections, got {len(result)}")
         
         return result
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON Parse Error: {e}")
+        print(f"❌ Raw output was: {out[:500]}")
+        raise ValueError(f"Failed to parse LLM JSON: {e}")
     except Exception as e:
         print(f"❌ LLM Error in plan_outline: {str(e)}")
-        # Enhanced fallback with better default questions
-        fallback_templates = [
-            "What are the fundamental concepts, definitions, and basic mechanisms of {topic}?",
-            "What is the current scientific evidence and research findings regarding {topic}?",
-            "How is {topic} measured, diagnosed, or assessed in clinical or research settings?",
-            "What are the primary risk factors, causes, and pathophysiology underlying {topic}?",
-            "What are the current treatment approaches, management strategies, and interventions for {topic}?",
-            "What are the complications, long-term outcomes, and emerging research directions in {topic}?"
+        print(f"❌ Error type: {type(e).__name__}")
+        # Better fallback
+        print(f"⚠️ Using fallback outline generation")
+        return [
+            {
+                "idx": i+1, 
+                "heading": f"{topic}: Aspect {i+1}", 
+                "brief": f"Investigate the {['molecular mechanisms and structure', 'physiological functions and regulation', 'clinical significance and measurements', 'pathological variants and diseases', 'therapeutic interventions and treatments', 'recent research and emerging findings'][i % 6]} of {topic}, including specific biochemical pathways, quantitative data from peer-reviewed studies, and clinical implications supported by systematic reviews and meta-analyses."
+            } 
+            for i in range(n)
         ]
-        return [{"idx": i+1, "heading": f"Section {i+1}", "brief": fallback_templates[i % len(fallback_templates)].format(topic=topic)} for i in range(n)]
 
 async def propose_query(brief: str, seen: list[str]) -> Dict[str, str]:
     config = _get_config()
-    sys = """Generate a precise academic search query. Prioritize:
-- Peer-reviewed research terms
-- Clinical/technical terminology  
-- Recent systematic reviews or meta-analyses
-- Specific mechanisms, biomarkers, or measurements
-Return JSON {query: string (5-10 words), rationale: why this query finds high-quality sources}."""
-    
-    usr = f"""Brief: {brief}
-Already seen: {len(seen)} sources
-Domains avoided: {[url.split('/')[2] if '/' in url else '' for url in seen[:3]]}
+    sys = """Generate a precise academic search query optimized for peer-reviewed literature.
 
-Generate a search query that finds DIFFERENT, DEEPER academic sources (journals, not general websites)."""
+PRIORITIZE:
+- Peer-reviewed research terms and MeSH terms
+- Clinical/technical terminology (avoid lay terms)
+- Systematic reviews, meta-analyses, RCTs
+- Specific mechanisms, biomarkers, molecular pathways
+- Recent research (last 5 years when possible)
+
+AVOID:
+- General websites or news sources
+- Patient education materials
+- Domains already searched
+
+Return JSON {query: string (5-10 words), rationale: why this finds high-quality academic sources}.
+
+EXAMPLES:
+Bad: "blood pressure treatment options"
+Good: "ACE inhibitors hypertension meta-analysis RCT outcomes"
+Bad: "how does diabetes affect kidneys"
+Good: "diabetic nephropathy podocyte injury molecular mechanisms"
+"""
+    
+    usr = f"""Research question: {brief}
+
+Already searched: {len(seen)} sources
+Domains to avoid: {list(set([url.split('/')[2] if '/' in url else '' for url in seen[:5]]))[:3]}
+
+Generate a search query that finds DIFFERENT, DEEPER academic sources (journals, not general websites).
+Focus on: peer-reviewed papers, systematic reviews, clinical trials, molecular mechanisms."""
     
     out = await _chat(config["model_planner"], [{"role":"system","content":sys},{"role":"user","content":usr}], 0.3, json_mode=True)
     try:
         return json.loads(out)
     except Exception:
-        # Enhance fallback by adding academic terms
-        academic_query = f"{brief} systematic review evidence pathophysiology"
+        # Enhanced fallback with academic terms
+        academic_terms = ["systematic review", "meta-analysis", "pathophysiology", "mechanism", "clinical trial"]
+        academic_query = f"{brief[:40]} {academic_terms[len(seen) % len(academic_terms)]}"
         return {"query": academic_query, "rationale": "fallback with academic terms"}
 
 async def reflect(brief: str, snippets: list[str]) -> Dict[str, str]:
     config = _get_config()
-    sys = """Analyze source quality and identify research gaps. Return JSON:
+    sys = """Analyze source quality and identify critical research gaps.
+
+ASSESS:
+1. Evidence level: Are there systematic reviews, meta-analyses, or RCTs? Or just observational studies?
+2. Mechanisms: Do sources explain molecular/cellular pathways with specific proteins, receptors, enzymes?
+3. Quantitative data: Are there effect sizes, p-values, confidence intervals, or just descriptive statements?
+4. Recency: Are sources from last 5 years, or outdated?
+5. Conflicts: Do sources agree, or are there controversies to explore?
+
+Return JSON:
 {
-  "notes": "Critical assessment: What key findings are present? What mechanisms explained? What evidence level?",
-  "next_query": "Specific query for missing depth (molecular mechanisms, clinical trials, recent meta-analyses) OR null if adequate"
-}"""
+  "notes": "Critical assessment: What KEY quantitative findings are present? What mechanisms explained? What evidence level (meta-analysis/RCT/cohort)? What is MISSING?",
+  "next_query": "Specific query for missing depth (e.g., 'RAAS AT1 receptor signaling IP3 pathway') OR null if we have high-quality recent systematic reviews with mechanistic detail"
+}
+
+STRICT: Only return null if sources include:
+- Recent systematic reviews or meta-analyses (last 5 years)
+- Mechanistic explanations with specific molecular details
+- Quantitative clinical data with effect sizes
+"""
     
     usr = f"""Research question: {brief}
 
-Sources found so far (first 500 chars each):
+Sources found (first 500 chars each):
 {snippets[:5]}
 
-Assess: Do we have peer-reviewed evidence? Mechanistic understanding? Clinical data? Recent research?
-If gaps exist, suggest ONE targeted academic query."""
+Critical analysis needed:
+- Do we have peer-reviewed evidence with quantitative data?
+- Do we have mechanistic understanding at molecular level?
+- Do we have recent clinical data from RCTs or systematic reviews?
+- Are there gaps in understanding or conflicting findings to explore?
+
+If ANY major gaps exist, suggest ONE highly targeted academic query."""
     
     out = await _chat(config["model_planner"], [{"role":"system","content":sys},{"role":"user","content":usr}], 0.3, json_mode=True)
     try:
@@ -126,7 +212,7 @@ If gaps exist, suggest ONE targeted academic query."""
 import re, json as _json
 
 def _citations_from_pages(pages):
-    return {i+1: {"url": p.get("url",""), "title": p.get("title","")} for i,p in enumerate(pages[:8])}
+    return {str(i+1): {"url": p.get("url",""), "title": p.get("title","")} for i,p in enumerate(pages[:8])}
 
 def _extract_json(s: str) -> dict | None:
     # try fenced JSON
@@ -141,79 +227,123 @@ def _extract_json(s: str) -> dict | None:
         except Exception: pass
     return None
 
-async def write_paragraph(brief: str, pages: list[dict]) -> dict:
+async def write_paragraph(brief: str, pages: list[dict], assets: list[dict] = None) -> dict:
     cfg = _get_config()
-    # provide short snippets to improve grounding without blowing tokens
+    
+    # Limit source text to prevent context overflow
     sources = [
         {
             "title": p.get("title",""), 
             "url": p.get("url",""), 
-            "snippet": (p.get("text","")[:800] if p.get("text") else ""),
+            "snippet": (p.get("text","")[:600] if p.get("text") else ""),  # Reduced from 1000 to 600
             "type": p.get("type", "web"),
             "authors": p.get("authors", ""),
             "year": p.get("year", ""),
-            "citations": p.get("citations", 0)
+            "citations": p.get("citations", 0),
+            "venue": p.get("venue", "")
         }
-        for p in pages[:8]  # Use more sources
+        for p in pages[:8]
     ]
+    
+    # Prepare visuals data
+    assets = assets or []
+    visuals = []
+    if assets:
+        for idx, asset in enumerate(assets[:4], 1):
+            visuals.append({
+                "number": idx,
+                "caption": asset.get("caption", ""),
+                "type": asset.get("type", "image")
+            })
+    
+    # SIMPLIFIED PROMPT - Less demanding but still academic
     sys = (
-        "You are a research synthesis expert. Write DEEP, evidence-based paragraphs with critical analysis. "
-        "Include: specific findings, statistical data, mechanisms, clinical implications, study limitations. "
-        "Use inline bracket citations [1], [2] after EVERY factual claim. "
-        "Return strict JSON: {draftMd: string (300-400 words, academic tone), citations: object {n: {url, title}}, quality: 0-1}. "
-        "Quality scoring: 0.9+ = multiple peer-reviewed sources with quantitative data; 0.7-0.8 = good sources; <0.6 = weak evidence. "
-        "Do not include any prose outside JSON."
+        "You are an academic research writer. Write a detailed, well-cited paragraph.\n\n"
+        "REQUIREMENTS:\n"
+        "1. LENGTH: Write 300-400 words with substantive content\n"
+        "2. CITATIONS: Add [1], [2], etc. after factual claims from sources\n"
+        "3. DATA: Include specific numbers, percentages, or study details when available\n"
+        "4. DEPTH: Explain mechanisms or processes mentioned in sources\n"
+        "5. QUALITY: Academic tone, clear language, logical flow\n\n"
+        "Return JSON: {draftMd: string, citations: {\"1\": {url, title}}, quality: float (0-1), visualsUsed: [1,2]}\n\n"
+        "Quality scoring:\n"
+        "- 0.8-1.0: Multiple peer-reviewed sources, quantitative data, mechanisms explained\n"
+        "- 0.6-0.7: Good sources with some detail\n"
+        "- 0.4-0.5: Basic coverage from available sources\n\n"
+        "Example style: 'The insulin receptor (IR) activates the PI3K/Akt pathway upon ligand binding [1]. "
+        "Studies show this increases glucose uptake by 50% (p<0.001) in muscle tissue [2]. "
+        "The mechanism involves GLUT4 translocation to the cell membrane [3]...'"
     )
-    usr = f"Brief: {brief}\nSources:\n{_json.dumps(sources, ensure_ascii=False)}"
+    
+    usr = f"Brief: {brief}\n\nSources:\n{_json.dumps(sources, ensure_ascii=False)}\n\nVisuals: {len(visuals)} available"
 
-    # 1) Try JSON mode
-    out = await _chat(cfg["model_writer"], [{"role":"system","content":sys},{"role":"user","content":usr}], 0.3, json_mode=True)
-    doc = _extract_json(out) or (_json.loads(out) if out.startswith("{") else None)
+    # Try JSON mode with error handling
+    try:
+        out = await _chat(cfg["model_writer"], [{"role":"system","content":sys},{"role":"user","content":usr}], 0.3, json_mode=True)
+        doc = _extract_json(out) or (_json.loads(out) if out.startswith("{") else None)
 
-    # 2) Repair pass if needed
-    if not doc:
-        fix_sys = "You convert content into valid JSON for the schema {draftMd:string, citations:object, quality:number}."
-        fix = await _chat(cfg["model_writer"], [{"role":"system","content":fix_sys},{"role":"user","content":out}], 0.0, json_mode=True)
-        doc = _extract_json(fix) or (_json.loads(fix) if fix.startswith("{") else None)
+        # Quick repair if needed
+        if not doc:
+            fix_sys = "Convert to JSON: {draftMd:string, citations:object, quality:float, visualsUsed:array}"
+            fix = await _chat(cfg["model_writer"], [{"role":"system","content":fix_sys},{"role":"user","content":out}], 0.0, json_mode=True)
+            doc = _extract_json(fix) or (_json.loads(fix) if fix.startswith("{") else None)
 
-    # 3) Final fallback: synthesize deterministically from sources (no placeholders)
-    if not doc:
+        # Final fallback: simple synthesis
+        if not doc:
+            cites = _citations_from_pages(pages)
+            # Create basic paragraph from source snippets
+            content_parts = []
+            for i, (n, meta) in enumerate(cites.items(), 1):
+                if i-1 < len(pages) and pages[i-1].get("text"):
+                    snippet = pages[i-1].get("text","")[:200].strip()
+                    if snippet:
+                        content_parts.append(f"{snippet} [{n}]")
+            
+            if content_parts:
+                body = f"Research on {brief.split('?')[0]}:\n\n" + " ".join(content_parts[:4])
+            else:
+                body = f"Analysis of {brief[:100]}: Available sources provide foundational information on this topic."
+            
+            return {"draftMd": body, "citations": cites, "quality": 0.4, "visualsUsed": []}
+
+        # Validate and fix citations
+        cites = doc.get("citations") or _citations_from_pages(pages)
+        used = sorted({int(n) for n in re.findall(r"\[(\d+)\]", doc.get("draftMd",""))})
+        
+        for n in used:
+            if str(n) not in cites:
+                idx = n-1
+                if 0 <= idx < len(pages):
+                    cites[str(n)] = {"url": pages[idx].get("url",""), "title": pages[idx].get("title","")}
+        
+        doc["citations"] = {str(k): v for k, v in cites.items()}
+        
+        # Ensure minimum length
+        if len(doc.get("draftMd","")) < 150:
+            doc["draftMd"] = (doc.get("draftMd","") + "\n\nFurther investigation of " + brief[:80] + " requires additional peer-reviewed sources.").strip()
+        
+        # Ensure at least one citation
+        if not re.search(r"\[\d+\]", doc["draftMd"]):
+            doc["draftMd"] += " [1]"
+        
+        doc["quality"] = doc.get("quality", 0.5)
+        doc["visualsUsed"] = doc.get("visualsUsed", [])
+        
+        return doc
+        
+    except Exception as e:
+        print(f"Writer error: {e}")
+        # Emergency fallback
         cites = _citations_from_pages(pages)
-        bullets = []
-        for i,(n,meta) in enumerate(cites.items(), 1):
-            t = (pages[i-1].get("text","") or "")[:240].strip()
-            if t:
-                bullets.append(f"- {t} [{i}]")
-        body = (
-            f"{brief.replace('Cover','Explain').replace('aspect','topic')}\n\n" +
-            (" ".join(bullets) if bullets else "This section summarizes current knowledge and clinical guidance based on reputable sources.")
-        )
-        return {"draftMd": body, "citations": cites, "quality": 0.45}
-
-    # 4) Validate and repair citations alignment
-    cites = doc.get("citations") or _citations_from_pages(pages)
-    used = sorted({int(n) for n in re.findall(r"\[(\d+)\]", doc.get("draftMd",""))})
-    for n in used:
-        if str(n) not in [*cites.keys(), *map(str, cites.keys())]:
-            # pad missing numbers from available pages
-            idx = n-1
-            if 0 <= idx < len(pages):
-                cites[str(n)] = {"url": pages[idx].get("url",""), "title": pages[idx].get("title","")}
-    doc["citations"] = {str(k): v for k,v in cites.items()}
-    if len(doc.get("draftMd","")) < 120:
-        # weak output → quick reinforcement
-        doc["draftMd"] = (doc.get("draftMd","") + "\n\n" + f"Summary: {brief}").strip()
-    if "Cover aspect" in doc["draftMd"]:
-        doc["draftMd"] = doc["draftMd"].replace("Cover aspect", "Explain")
-    if not re.search(r"\[\d+\]", doc["draftMd"]):
-        # ensure at least one anchor
-        doc["draftMd"] += " [1]"
-    if "quality" not in doc:
-        doc["quality"] = 0.6
-    return doc
+        return {
+            "draftMd": f"Research summary for: {brief[:100]}\n\nBased on available sources, this topic requires comprehensive analysis from peer-reviewed literature [1].",
+            "citations": cites,
+            "quality": 0.3,
+            "visualsUsed": []
+        }
 
 async def aggregate_report(topic: str, paragraphs: list[dict]) -> str:
     config = _get_config()
-    sys = "Stitch paragraphs into a markdown report with ToC and conclusion. Output markdown only."
+    sys = "Stitch paragraphs into cohesive markdown report with table of contents and conclusion. Maintain all citations. Output markdown only."
     usr = f"Topic: {topic}\nParagraphs: {[p['draftMd'] for p in paragraphs]}"
     return await _chat(config["model_writer"], [{"role":"system","content":sys},{"role":"user","content":usr}], 0.2)

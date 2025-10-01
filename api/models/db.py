@@ -68,6 +68,11 @@ async def ensure_indexes():
         await database.researchMessages.create_index([("runId", 1), ("_id", 1)])
         logger.info("✅ ResearchMessages indexes created")
         
+        logger.info("🖼️  Creating assets collection indexes...")
+        await database.assets.create_index([("runId", 1), ("outlineItemId", 1)])
+        await database.assets.create_index([("runId", 1)])
+        logger.info("✅ Assets indexes created")
+        
         logger.info("🎉 All database indexes created successfully!")
         
     except Exception as e:

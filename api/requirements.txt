@@ -14,6 +14,10 @@ PyMuPDF==1.24.0
 camelot-py[cv]==0.11.0
 pillow==10.4.0
 
+# HTML parsing for visual extraction
+beautifulsoup4==4.12.3
+lxml==4.9.3
+
 # Computer Vision (optional)
-# azure-cognitiveservices-vision-computervision==0.9.0
-# msrest==0.7.1
+azure-cognitiveservices-vision-computervision==0.9.0
+msrest==0.7.1

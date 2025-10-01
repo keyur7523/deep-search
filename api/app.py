@@ -182,6 +182,77 @@ async def run_report(run_id: str, user: User = Depends(get_user)):
     if not rep: raise HTTPException(404, "report not ready")
     return rep
 
+@app.get("/runs/{run_id}/assets")
+async def run_assets(run_id: str, user: User = Depends(get_user)):
+    """Get all visual assets (figures, diagrams) for a run"""
+    try:
+        rid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(400, "invalid run id")
+    
+    assets_cursor = db().assets.find({"runId": rid}).sort("outlineItemId", 1)
+    assets = []
+    async for asset in assets_cursor:
+        assets.append({
+            "_id": str(asset["_id"]),
+            "outlineItemId": str(asset.get("outlineItemId", "")),
+            "type": asset.get("type", "image"),
+            "caption": asset.get("caption", ""),
+            "ocrText": asset.get("ocrText", ""),
+            "imageUrl": asset.get("imageUrl", asset.get("sourceUrl", "")),
+            "tags": asset.get("tags", []),
+            "meta": asset.get("meta", {})
+        })
+    
+    return {"assets": assets}
+
+@app.get("/runs/{run_id}/sources")
+async def run_sources(run_id: str, user: User = Depends(get_user)):
+    """Get all sources used in a research run"""
+    try:
+        rid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(400, "invalid run id")
+    
+    # Get all sources for this run
+    sources_cursor = db().sources.find({"runId": rid}).sort([("score", -1), ("_id", 1)])
+    sources = []
+    
+    async for source in sources_cursor:
+        # Get the outline item to know which section this source belongs to
+        outline_item = None
+        if source.get("outlineItemId"):
+            outline_item = await db().outlineItems.find_one({"_id": source["outlineItemId"]})
+        
+        sources.append({
+            "_id": str(source["_id"]),
+            "url": source.get("url", ""),
+            "title": source.get("title", "Untitled"),
+            "type": source.get("type", "web"),
+            "authors": source.get("authors", ""),
+            "year": source.get("year", ""),
+            "venue": source.get("venue", ""),
+            "citations": source.get("citations", 0),
+            "score": source.get("score", 0.0),
+            "textLength": len(source.get("text", "")),
+            "sectionTitle": outline_item.get("heading", "") if outline_item else "",
+            "sectionIdx": outline_item.get("idx", 0) if outline_item else 0
+        })
+    
+    # Get unique sources (deduplicate by URL)
+    unique_sources = {}
+    for src in sources:
+        url = src["url"]
+        if url not in unique_sources or src["score"] > unique_sources[url]["score"]:
+            unique_sources[url] = src
+    
+    return {
+        "sources": list(unique_sources.values()),
+        "total": len(unique_sources),
+        "academic": len([s for s in unique_sources.values() if s["type"] == "academic"]),
+        "web": len([s for s in unique_sources.values() if s["type"] == "web"])
+    }
+
 @app.get("/runs/{run_id}/paragraphs")
 async def run_paragraphs(run_id: str, user: User = Depends(get_user)):
     """Get individual paragraphs for a run"""
