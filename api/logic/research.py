@@ -1,9 +1,13 @@
 import asyncio
 import logging
+import os
 from typing import List, Dict, Any
 from bson import ObjectId
 from models.db import db
 from services import llm, search, extract, live
+from services.academic import deep_academic_search, score_source_quality
+from services.pdf_processor import process_academic_pdf
+from services.vision import analyze_source_visuals
 from services.messages import emit_msg
 from urllib.parse import urlparse
 
@@ -174,9 +178,21 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_i
             "rationale": q.get("rationale","")
         })
         provider = cfg.get("searchProvider", "hybrid")
-        logger.info(f"🔍 Searching with provider '{provider}' for query: {q.get('query','')}")
-        results = await search.web_search(q.get("query",""), TOP, provider) or []
-        logger.info(f"📄 Found {len(results)} search results")
+        use_academic = cfg.get("useAcademicSources", True)
+        
+        # Multi-source strategy: combine web + academic
+        results = []
+        if use_academic:
+            logger.info(f"🎓 Deep academic search for query: {q.get('query','')}")
+            academic_results = await deep_academic_search(q.get("query",""), TOP // 2)
+            results.extend(academic_results)
+        
+        # Add regular web search for balance
+        logger.info(f"🔍 Web search with provider '{provider}' for query: {q.get('query','')}")
+        web_results = await search.web_search(q.get("query",""), TOP // 2, provider) or []
+        results.extend(web_results)
+        
+        logger.info(f"📄 Found {len(results)} total search results ({len([r for r in results if r.get('type')=='academic'])} academic)")
         
         # Add search results message
         await emit_msg(run_id, role="assistant", kind="fetch", text=f"Found {len(results)} sources", meta={
@@ -189,15 +205,43 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_i
             url = res.get("url","")
             if not url or url in seen_urls: continue
             seen_urls.append(url)
+            
+            # Extract content
             doc = await extract.fetch_and_extract(url)
             if doc:
+                # Preserve academic metadata
                 doc["title"] = res.get("title","")
+                doc["type"] = res.get("type", "web")
+                doc["authors"] = res.get("authors", "")
+                doc["year"] = res.get("year", "")
+                doc["citations"] = res.get("citations", 0)
+                doc["venue"] = res.get("venue", "")
                 doc["runId"] = oi["runId"]
                 doc["outlineItemId"] = oi_id
-                doc["score"] = 0.0
+                
+                # Quality scoring
+                doc["score"] = score_source_quality(res)
+                
+                # PDF processing for academic papers
+                pdf_url = res.get("pdf_url")
+                if pdf_url and doc["type"] == "academic":
+                    logger.info(f"📄 Processing academic PDF: {_short(res.get('title',''), 40)}")
+                    try:
+                        pdf_content = await process_academic_pdf(pdf_url)
+                        if not pdf_content.get("error"):
+                            doc["text"] = pdf_content.get("text", doc.get("text", ""))
+                            doc["pdf_metadata"] = pdf_content.get("metadata", {})
+                            doc["figures"] = pdf_content.get("figures", [])
+                            doc["references"] = pdf_content.get("references", [])
+                            logger.info(f"✅ PDF processed: {len(doc.get('text',''))} chars, {len(doc.get('figures',[]))} figures")
+                    except Exception as e:
+                        logger.warning(f"⚠️ PDF processing failed: {e}")
+                
                 await db().sources.insert_one(doc)
                 pages.append(doc)
-                await live.set_live(oi["runId"], "fetch", f'Looking at {_short(res.get("title","Untitled"), 48)} ({_domain(url)})', {"url": url})
+                
+                source_indicator = "📚" if doc["type"] == "academic" else "🌐"
+                await live.set_live(oi["runId"], "fetch", f'{source_indicator} {_short(res.get("title","Untitled"), 45)} ({_domain(url)})', {"url": url})
         notes = await llm.reflect(oi["brief"], [p.get("text","")[:500] for p in pages])
         await live.set_live(oi["runId"], "reflect", "Analyzing gaps…", {"round": r})
         nxt = notes.get("next_query")
@@ -237,14 +281,32 @@ async def _work_outline_item(oi_id: ObjectId, R: int, TOP: int, KEEP: int, run_i
     # Add drafting message
     await emit_msg(run_id, role="assistant", kind="draft", text=f"writing section {oi['idx']}")
     
-    logger.info(f"🔧 Writing paragraph for section {oi['idx']} with {len(kept_pages)} sources")
+    sources = kept_pages
+    if len(sources) < 2:
+        # one retry: alternate provider or broader query
+        alt = await search.web_search(oi["brief"], top=6, provider="brave" if os.getenv("SEARCH_PROVIDER","serpapi")=="serpapi" else "serpapi")
+        # fetch a few quickly
+        fetched = []
+        for r in alt[:4]:
+            doc = await extract.fetch_and_extract(r.get("url",""))
+            if doc:
+                doc["title"] = r.get("title","")
+                fetched.append(doc)
+        sources = (sources + fetched)[:6]
+
+    logger.info(f"🔧 Writing paragraph for section {oi['idx']} with {len(sources)} sources")
     try:
-        para = await llm.write_paragraph(oi["brief"], kept_pages)
+        para = await llm.write_paragraph(oi["brief"], sources)
         logger.info(f"🔧 Generated paragraph: {para.get('draftMd', '')[:100]}...")
     except Exception as e:
         logger.error(f"❌ Paragraph generation failed: {str(e)}")
         para = {"draftMd": f"Error generating paragraph: {str(e)}", "citations": {}, "quality": 0.0}
     
+    # Log real failures and block placeholders
+    md = para.get("draftMd","")
+    if not md or "Cover aspect" in md:
+        logger.error(f"writer returned weak paragraph; brief='{oi['brief'][:120]}', sources={len(sources)}")
+
     # Convert numeric keys to string keys for MongoDB compatibility
     citations = para.get("citations", {})
     citations_str_keys = {str(k): v for k, v in citations.items()}
