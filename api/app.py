@@ -32,8 +32,7 @@ origins = [
     "http://localhost:3001", 
     "http://localhost:3002",
     "http://localhost:3003",
-    "https://deep-search-ruby.vercel.app",
-    "https://deep-search.vercel.app",  # Alternative Vercel URL
+    "https://deep-search-lovat.vercel.app/",
     *[o.strip() for o in os.getenv("WEB_ORIGINS", "").split(",") if o.strip()]
 ]
 app.add_middleware(
