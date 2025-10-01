@@ -32,17 +32,27 @@ origins = [
     "http://localhost:3001", 
     "http://localhost:3002",
     "http://localhost:3003",
-    "https://deep-search-lovat.vercel.app/",
+    "https://deep-search-ruby.vercel.app",
+    "https://deep-search-lovat.vercel.app",
     *[o.strip() for o in os.getenv("WEB_ORIGINS", "").split(",") if o.strip()]
 ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,          # e.g. ["http://localhost:3001", "http://localhost:3000"]
     allow_credentials=True,         # only if you send cookies/Authorization
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 logger.info(f"CORS origins configured: {origins}")
+
+# Add request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Request: {request.method} {request.url} from {request.client.host}")
+    logger.info(f"Headers: {dict(request.headers)}")
+    response = await call_next(request)
+    logger.info(f"Response: {response.status_code}")
+    return response
 
 class User(BaseModel):
     sub: str
