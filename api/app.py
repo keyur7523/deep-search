@@ -45,15 +45,6 @@ app.add_middleware(
 )
 logger.info(f"CORS origins configured: {origins}")
 
-# Add request logging middleware
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    logger.info(f"Request: {request.method} {request.url} from {request.client.host}")
-    logger.info(f"Headers: {dict(request.headers)}")
-    response = await call_next(request)
-    logger.info(f"Response: {response.status_code}")
-    return response
-
 class User(BaseModel):
     sub: str
 
@@ -130,19 +121,36 @@ async def health():
 
 # --- Projects ---
 @app.post("/projects")
-async def create_project(p: NewProject, user: User = Depends(get_user)):
-    logger.info(f"📝 Creating new project: '{p.title}' for user: {user.sub}")
-    doc = {
-        "userId": user.sub,
-        "title": p.title,
-        "goalMd": p.goal,
-        "maxParagraphs": p.maxParagraphs,
-        "createdAt": asyncio.get_event_loop().time(),
-    }
-    res = await db().projects.insert_one(doc)
-    project_id = str(res.inserted_id)
-    logger.info(f"✅ Project created successfully with ID: {project_id}")
-    return {"project_id": project_id}
+async def create_project(request: Request, user: User = Depends(get_user)):
+    try:
+        # Get the raw body
+        body = await request.body()
+        logger.info(f"📝 Raw body: {body}")
+        
+        # Parse JSON
+        import json
+        data = json.loads(body.decode())
+        logger.info(f"📝 Parsed data: {data}")
+        
+        # Validate the data
+        p = NewProject(**data)
+        logger.info(f"📝 Validated project: title='{p.title}', goal='{p.goal}', maxParagraphs={p.maxParagraphs}")
+        
+        doc = {
+            "userId": user.sub,
+            "title": p.title,
+            "goalMd": p.goal,
+            "maxParagraphs": p.maxParagraphs,
+            "createdAt": asyncio.get_event_loop().time(),
+        }
+        res = await db().projects.insert_one(doc)
+        project_id = str(res.inserted_id)
+        logger.info(f"✅ Project created successfully with ID: {project_id}")
+        return {"project_id": project_id}
+        
+    except Exception as e:
+        logger.error(f"📝 Error creating project: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
 
 @app.post("/projects/{project_id}/runs")
 async def create_run(project_id: str, cfg: NewRun, user: User = Depends(get_user)):

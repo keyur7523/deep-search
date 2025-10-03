@@ -42,6 +42,13 @@
   --destructive: oklch(0.6 0.25 27);
   --destructive-foreground: oklch(0.98 0 0);
   --radius: 1rem;
+  
+  /* Z-Index Scale for Deep Research App */
+  --z-sidebar: 10;
+  --z-dropdown: 20;
+  --z-modal: 30;
+  --z-fab: 40;
+  --z-tooltip: 50;
 }
 
 @theme inline {
@@ -93,4 +100,149 @@
   body {
     @apply bg-background text-foreground font-sans;
   }
+}
+
+/* ===== Deep Research Enhancements ===== */
+
+/* Ensure proper stacking context */
+.research-sidebar {
+  z-index: var(--z-sidebar);
+}
+
+.settings-dropdown,
+.model-dropdown {
+  z-index: var(--z-dropdown);
+}
+
+.modal-overlay {
+  z-index: var(--z-modal);
+}
+
+.fab-button {
+  z-index: var(--z-fab);
+}
+
+/* Markdown Content Styling */
+.markdown-content {
+  @apply text-foreground;
+}
+
+.markdown-content h1 {
+  @apply text-2xl font-bold mb-4 mt-6 text-foreground;
+}
+
+.markdown-content h2 {
+  @apply text-xl font-semibold mb-3 mt-6 text-foreground;
+}
+
+.markdown-content h3 {
+  @apply text-lg font-medium mb-2 mt-4 text-foreground;
+}
+
+.markdown-content p {
+  @apply mb-3 text-foreground leading-relaxed;
+}
+
+.markdown-content ul {
+  @apply list-disc list-inside mb-4 space-y-1 ml-4;
+}
+
+.markdown-content ol {
+  @apply list-decimal list-inside mb-4 space-y-1 ml-4;
+}
+
+.markdown-content li {
+  @apply text-foreground;
+}
+
+.markdown-content blockquote {
+  @apply border-l-4 border-primary pl-4 italic text-muted-foreground my-4;
+}
+
+.markdown-content code {
+  @apply bg-muted px-1.5 py-0.5 rounded text-sm font-mono;
+}
+
+.markdown-content pre {
+  @apply bg-muted p-4 rounded-lg overflow-x-auto mb-4;
+}
+
+.markdown-content pre code {
+  @apply bg-transparent p-0;
+}
+
+.markdown-content a {
+  @apply text-primary hover:underline;
+}
+
+.markdown-content strong {
+  @apply font-semibold;
+}
+
+.markdown-content em {
+  @apply italic;
+}
+
+/* Smooth transitions */
+.markdown-content * {
+  @apply transition-colors duration-200;
+}
+
+/* Loading skeleton animations */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Ensure dropdowns are above other content */
+[data-dropdown] {
+  position: relative;
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 768px) {
+  .markdown-content h1 {
+    @apply text-xl;
+  }
+  
+  .markdown-content h2 {
+    @apply text-lg;
+  }
+  
+  .markdown-content h3 {
+    @apply text-base;
+  }
+}
+
+/* Accessibility: Focus visible styles */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  @apply ring-2 ring-purple-400 ring-offset-2 outline-none;
+}
+
+/* Scrollbar styling */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  @apply bg-muted;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-muted-foreground/30 rounded-full;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/50;
 }

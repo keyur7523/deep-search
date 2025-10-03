@@ -6,6 +6,8 @@ export function useRunMessages(apiBase: string, runId: string | null) {
   const [msgs, setMsgs] = useState<ResearchMsg[]>([]);
   const lastId = useRef<string | null>(null);
   const alive = useRef(true);
+  
+  console.log('useRunMessages - apiBase:', apiBase, 'runId:', runId);
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 

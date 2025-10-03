@@ -1,236 +1,210 @@
-import type { OutlineItemData } from "@/components/outline-item"
-import type { Source } from "@/components/sources-table"
-import type { Note } from "@/components/notes-log"
-import type { ResearchThread, ResearchMessage, NewResearchRequest } from "@/lib/types"
-import { API_BASE } from "@/lib/config"
+import { API_BASE } from './config'
+import { 
+  APIError, 
+  validateTopic, 
+  validateResearchParams, 
+  retryWithBackoff,
+  logError 
+} from './errorUtils'
+import type {
+  StartRunRequest,
+  CreateProjectResponse,
+  StartRunResponse,
+  GetRunsResponse,
+  GetReportResponse
+} from './types'
 
-export interface Project {
-  id: string
-  name: string
-  createdAt: Date
-}
+/**
+ * Wrapper for fetch with error handling
+ */
+async function fetchWithError(
+  url: string,
+  options?: RequestInit
+): Promise<Response> {
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options?.headers,
+      },
+    })
 
-export interface Run {
-  id: string
-  projectId: string
-  topic: string
-  status: "running" | "completed" | "failed"
-  progress: number
-  createdAt: Date
-}
-
-export interface RunDetails {
-  id: string
-  topic: string
-  status: "running" | "completed" | "failed"
-  progress: number
-  outline: OutlineItemData[]
-  sources: Source[]
-  notes: Note[]
-  draft: string
-}
-
-// Real API functions using API_BASE
-export async function createProject(name: string): Promise<Project> {
-  const response = await fetch(`${API_BASE}/projects`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      title: name,
-      goal: '',
-      maxParagraphs: 6,
-    }),
-  })
-  
-  if (!response.ok) {
-    throw new Error(`Failed to create project: ${response.statusText}`)
-  }
-  
-  const data = await response.json()
-  return {
-    id: data.project_id,
-    name,
-    createdAt: new Date(),
-  }
-}
-
-export async function startRun(data: {
-  topic: string
-  maxParagraphs: number
-  roundsPerParagraph: number
-  searchProvider?: string
-}): Promise<Run> {
-  // First create a project for this run
-  const project = await createProject(data.topic)
-  
-  // Then create a run for the project
-  const response = await fetch(`${API_BASE}/projects/${project.id}/runs`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      rounds: data.roundsPerParagraph,
-      resultsPerRound: 8,
-      keepPerParagraph: data.maxParagraphs,
-      searchProvider: data.searchProvider || "hybrid",
-    }),
-  })
-  
-  if (!response.ok) {
-    throw new Error(`Failed to start run: ${response.statusText}`)
-  }
-  
-  const runData = await response.json()
-  return {
-    id: runData.run_id,
-    projectId: project.id,
-    topic: data.topic,
-    status: "running",
-    progress: 0,
-    createdAt: new Date(),
-  }
-}
-
-export async function getRunStatus(runId: string): Promise<{status: string, progress: number}> {
-  const response = await fetch(`${API_BASE}/runs/${runId}/status`)
-  
-  if (!response.ok) {
-    throw new Error(`Failed to get run status: ${response.statusText}`)
-  }
-  
-  return await response.json()
-}
-
-export async function getOutline(runId: string): Promise<OutlineItemData[]> {
-  const response = await fetch(`${API_BASE}/runs/${runId}/outline`)
-  
-  if (!response.ok) {
-    throw new Error(`Failed to get outline: ${response.statusText}`)
-  }
-  
-  const data = await response.json()
-  return data.items || []
-}
-
-export async function listSources(runId: string): Promise<Source[]> {
-  const response = await fetch(`${API_BASE}/runs/${runId}/status`)
-  
-  if (!response.ok) {
-    throw new Error(`Failed to get sources: ${response.statusText}`)
-  }
-  
-  const data = await response.json()
-  return data.sources || []
-}
-
-export async function getReport(runId: string): Promise<{ markdown: string }> {
-  const response = await fetch(`${API_BASE}/runs/${runId}/report`)
-  
-  if (!response.ok) {
-    throw new Error(`Failed to get report: ${response.statusText}`)
-  }
-  
-  const data = await response.json()
-  return data
-}
-
-export async function getParagraphs(runId: string): Promise<Array<{draftMd: string, idx: number, quality: number, citations: Record<string, any>}>> {
-  const response = await fetch(`${API_BASE}/runs/${runId}/paragraphs`)
-  
-  if (!response.ok) {
-    throw new Error(`Failed to get paragraphs: ${response.statusText}`)
-  }
-  
-  const data = await response.json()
-  return data.paragraphs || []
-}
-
-export async function getRecentRuns(limit: number = 5): Promise<RunDetails[]> {
-  const response = await fetch(`${API_BASE}/runs?limit=${limit}`)
-  
-  if (!response.ok) {
-    throw new Error(`Failed to get recent runs: ${response.statusText}`)
-  }
-  
-  const data = await response.json()
-  return data.runs || []
-}
-
-// New Research Thread API functions
-export async function getResearchThreads(limit: number = 20): Promise<ResearchThread[]> {
-  const response = await fetch(`${API_BASE}/research/threads?limit=${limit}`)
-  
-  if (!response.ok) {
-    throw new Error(`Failed to get research threads: ${response.statusText}`)
-  }
-  
-  const data = await response.json()
-  return data.threads || []
-}
-
-export async function getResearchThread(threadId: string): Promise<ResearchThread> {
-  const response = await fetch(`${API_BASE}/research/threads/${threadId}`)
-  
-  if (!response.ok) {
-    throw new Error(`Failed to get research thread: ${response.statusText}`)
-  }
-  
-  return await response.json()
-}
-
-export async function getResearchMessages(threadId: string, limit: number = 50): Promise<ResearchMessage[]> {
-  const response = await fetch(`${API_BASE}/research/threads/${threadId}/messages?limit=${limit}`)
-  
-  if (!response.ok) {
-    throw new Error(`Failed to get research messages: ${response.statusText}`)
-  }
-  
-  const data = await response.json()
-  return data.messages || []
-}
-
-export async function startNewResearch(data: NewResearchRequest): Promise<ResearchThread> {
-  // First create a project
-  const project = await createProject(data.topic)
-  
-  // Then create a run for the project
-  const response = await fetch(`${API_BASE}/projects/${project.id}/runs`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      rounds: data.roundsPerParagraph,
-      resultsPerRound: 8,
-      keepPerParagraph: data.maxParagraphs,
-      searchProvider: data.searchProvider || "hybrid",
-    }),
-  })
-  
-  if (!response.ok) {
-    throw new Error(`Failed to start research: ${response.statusText}`)
-  }
-  
-  const runData = await response.json()
-  
-  // Return the thread data
-  return {
-    id: runData.run_id,
-    title: data.topic,
-    status: "active",
-    messages: [],
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    progress: 0,
-    metadata: {
-      maxParagraphs: data.maxParagraphs,
-      roundsPerParagraph: data.roundsPerParagraph,
-      searchProvider: data.searchProvider || "hybrid",
-      totalSources: 0,
-      qualityScore: 0
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new APIError(
+        response.status,
+        errorData.message || `Request failed with status ${response.status}`,
+        errorData
+      )
     }
+
+    return response
+  } catch (error) {
+    if (error instanceof APIError) {
+      throw error
+    }
+    
+    // Network or other errors
+    logError('fetchWithError', error, { url, options })
+    throw new APIError(
+      0,
+      'Network error. Please check your connection and try again.',
+      error
+    )
+  }
+}
+
+/**
+ * Creates a new research project
+ */
+export async function createProject(
+  topic: string, 
+  maxParagraphs: number = 5
+): Promise<CreateProjectResponse> {
+  try {
+    validateTopic(topic)
+
+    const response = await retryWithBackoff(() =>
+      fetchWithError(`${API_BASE}/projects`, {
+        method: 'POST',
+        body: JSON.stringify({ 
+          title: topic,
+          goal: "",
+          maxParagraphs: maxParagraphs
+        }),
+      })
+    )
+
+    const data = await response.json()
+    console.log('CREATE PROJECT RESPONSE:', data)  // ADD THIS
+    console.log('PROJECT ID:', data.project_id)     // ADD THIS
+    return data
+  } catch (error) {
+    logError('createProject', error, { topic, maxParagraphs })
+    throw error
+  }
+}
+
+/**
+ * Starts a new research run
+ */
+export async function startRun(
+  projectId: string,
+  rounds: number = 2,
+  searchProvider: string = 'hybrid',
+  resultsPerRound: number = 8,
+  keepPerParagraph: number = 6
+): Promise<StartRunResponse> {
+  try {
+    if (rounds < 1 || rounds > 5) {
+      throw new APIError(400, 'Rounds must be between 1 and 5')
+    }
+
+    const response = await retryWithBackoff(() =>
+      fetchWithError(`${API_BASE}/projects/${projectId}/runs`, {
+        method: 'POST',
+        body: JSON.stringify({
+          rounds: rounds,
+          resultsPerRound: resultsPerRound,
+          keepPerParagraph: keepPerParagraph,
+          searchProvider: searchProvider
+        }),
+      })
+    )
+
+    const data = await response.json()
+    console.log('🔍 START RUN RESPONSE:', data)  // ADD THIS
+    console.log('🔍 RUN ID:', data.run_id)       // ADD THIS
+    return data
+  } catch (error) {
+    logError('startRun', error, { projectId, rounds, searchProvider })
+    throw error
+  }
+}
+
+/**
+ * Gets recent research runs
+ */
+export async function getRecentRuns(limit: number = 20): Promise<GetRunsResponse['runs']> {
+  try {
+    const response = await fetchWithError(`${API_BASE}/runs?limit=${limit}`)
+    const data: GetRunsResponse = await response.json()
+    return data.runs || []
+  } catch (error) {
+    logError('getRecentRuns', error, { limit })
+    // Return empty array on error to allow graceful degradation
+    return []
+  }
+}
+
+/**
+ * Gets a specific run by ID
+ */
+export async function getRun(runId: string): Promise<StartRunResponse> {
+  try {
+    const response = await fetchWithError(`${API_BASE}/runs/${runId}`)
+    return await response.json()
+  } catch (error) {
+    logError('getRun', error, { runId })
+    throw error
+  }
+}
+
+/**
+ * Gets the report for a completed run
+ */
+export async function getReport(runId: string): Promise<GetReportResponse> {
+  try {
+    const response = await retryWithBackoff(() =>
+      fetchWithError(`${API_BASE}/runs/${runId}/report`)
+    )
+    return await response.json()
+  } catch (error) {
+    logError('getReport', error, { runId })
+    throw error
+  }
+}
+
+/**
+ * Deletes a research run
+ */
+export async function deleteRun(runId: string): Promise<void> {
+  try {
+    await fetchWithError(`${API_BASE}/runs/${runId}`, {
+      method: 'DELETE',
+    })
+  } catch (error) {
+    logError('deleteRun', error, { runId })
+    throw error
+  }
+}
+
+/**
+ * Cancels an in-progress run
+ */
+export async function cancelRun(runId: string): Promise<void> {
+  try {
+    await fetchWithError(`${API_BASE}/runs/${runId}/cancel`, {
+      method: 'POST',
+    })
+  } catch (error) {
+    logError('cancelRun', error, { runId })
+    throw error
+  }
+}
+
+/**
+ * Health check endpoint
+ */
+export async function healthCheck(): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_BASE}/health`, {
+      method: 'GET',
+    })
+    return response.ok
+  } catch (error) {
+    logError('healthCheck', error)
+    return false
   }
 }

@@ -1,84 +1,82 @@
-export interface ResearchThread {
+// Research run types
+export interface ResearchRun {
   id: string
   title: string
-  status: 'active' | 'completed' | 'failed' | 'paused'
-  messages: ResearchMessage[]
+  status: 'queued' | 'planning' | 'running' | 'done' | 'failed'
   createdAt: Date
-  updatedAt: Date
-  completedAt?: Date
   progress: number
-  outline?: OutlineItem[]
-  finalReport?: string
-  metadata?: {
-    maxParagraphs: number
-    roundsPerParagraph: number
-    searchProvider: string
-    totalSources: number
-    qualityScore?: number
-  }
 }
 
+// Research message types
 export interface ResearchMessage {
-  id: string
-  threadId: string
-  type: 'user' | 'system' | 'progress' | 'result' | 'error' | 'outline' | 'search' | 'source' | 'draft' | 'complete'
-  content: string
-  timestamp: Date
-  metadata?: {
+  _id: string
+  role: 'user' | 'assistant'
+  kind: 'status' | 'query' | 'fetch' | 'reflect' | 'draft' | 'section' | 'complete' | 'error' | 'info'
+  text: string
+  t: string
+  meta?: {
     section?: number
-    sectionTitle?: string
     sources?: number
     academic?: number
     web?: number
     quality?: number
-    url?: string
-    sourceType?: 'academic' | 'web'
     citations?: number
-    duration?: number
-    round?: number
     query?: string
-    rationale?: string
+    url?: string
+    round?: number
+    idx?: number
   }
-  isStreaming?: boolean
 }
 
-export interface OutlineItem {
+// Research thread (not currently used but kept for future)
+export interface ResearchThread {
   id: string
-  index: number
+  projectId: string
   title: string
-  brief: string
-  status: 'queued' | 'searching' | 'drafting' | 'done' | 'failed'
+  status: 'queued' | 'planning' | 'running' | 'completed' | 'failed' | 'paused'
   progress: number
-  sources?: number
-  quality?: number
+  messages: ResearchMessage[]
+  createdAt: Date
+  updatedAt: Date
+  latestMessage?: string
 }
 
-export interface Source {
-  id: string
-  title: string
-  url: string
-  snippet: string
-  type: 'academic' | 'web'
-  authors?: string
-  year?: number
-  citations?: number
-  section: number
-  quality?: number
-}
-
-export interface NewResearchRequest {
+// API request types
+export interface StartRunRequest {
   topic: string
   maxParagraphs: number
   roundsPerParagraph: number
-  searchProvider?: string
+  searchProvider: string
 }
 
-export interface ResearchProgress {
-  threadId: string
-  status: 'planning' | 'running' | 'completed' | 'failed'
-  progress: number
-  currentSection?: number
-  totalSections?: number
-  currentActivity?: string
-  estimatedTimeRemaining?: number
+// API response types
+export interface CreateProjectResponse {
+  project_id: string
+}
+
+export interface StartRunResponse {
+  run_id: string
+}
+
+export interface GetRunsResponse {
+  runs: Array<{
+    id: string
+    topic: string
+    status: string
+    createdAt: string
+    progress: number
+  }>
+}
+
+export interface GetReportResponse {
+  markdown: string
+}
+
+// Component prop types
+export interface ResearchChatProps {
+  runId: string | null
+  onRunStarted?: (runId: string) => void
+  onRunCreated?: (run: ResearchRun) => void
+  onStartNewChat?: () => void
+  onExportReport?: () => void
 }
