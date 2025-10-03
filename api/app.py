@@ -26,7 +26,7 @@ logger.info("Environment variables loaded")
 app = FastAPI(title="Deep Research API", version="0.1.0")
 logger.info("FastAPI app created")
 
-# Allow localhost for development and production Vercel URL
+# Allow localhost for development and production URLs
 origins = [
     "http://localhost:3000",
     "http://localhost:3001", 
@@ -34,12 +34,20 @@ origins = [
     "http://localhost:3003",
     "https://deep-search-ruby.vercel.app",
     "https://deep-search-lovat.vercel.app",
+    "https://deep-search-two.vercel.app",
+    # Add your frontend domain here
     *[o.strip() for o in os.getenv("WEB_ORIGINS", "").split(",") if o.strip()]
 ]
+
+# For Render deployment, be more permissive with CORS
+if os.getenv("RENDER"):
+    origins = ["*"]  # Allow all origins on Render
+    logger.info("Running on Render - using permissive CORS")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,          # e.g. ["http://localhost:3001", "http://localhost:3000"]
-    allow_credentials=True,         # only if you send cookies/Authorization
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
@@ -118,6 +126,11 @@ async def root():
 @app.get("/health")
 async def health():
     return {"ok": True}
+
+# Handle CORS preflight requests manually
+@app.options("/{path:path}")
+async def options_handler(path: str):
+    return {"message": "OK"}
 
 # --- Projects ---
 @app.post("/projects")
