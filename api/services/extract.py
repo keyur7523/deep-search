@@ -8,6 +8,24 @@ logger = logging.getLogger(__name__)
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
 
+async def extract_content(url: str) -> Dict:
+    """
+    Wrapper for agent system compatibility.
+    Maps to fetch_and_extract function.
+    """
+    result = await fetch_and_extract(url)
+    if result:
+        return result
+    else:
+        # Return empty dict if extraction failed
+        return {
+            "url": url,
+            "title": "",
+            "text": "",
+            "html": "",
+            "hash": ""
+        }
+
 async def fetch_and_extract(url: str) -> Optional[Dict]:
     """
     Enhanced extraction with multiple fallback strategies:

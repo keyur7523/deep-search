@@ -80,3 +80,61 @@ export interface ResearchChatProps {
   onStartNewChat?: () => void
   onExportReport?: () => void
 }
+
+export type AgentMode = "simple" | "agentic" | "auto";
+
+export type AgentTaskStatus = "pending" | "running" | "done" | "failed";
+
+export interface AgentTask {
+  id: string;
+  type: string;
+  status: AgentTaskStatus;
+  parentId?: string;
+  createdAt: string;
+}
+
+export interface AgentGraphNode {
+  id: string;
+  type: string;
+  status: AgentTaskStatus;
+  label: string;
+}
+
+export interface AgentGraphEdge {
+  source: string;
+  target: string;
+}
+
+export interface AgentGraph {
+  nodes: AgentGraphNode[];
+  edges: AgentGraphEdge[];
+}
+
+export interface AgentEvent {
+  id: string;
+  agent: string;
+  kind: "thinking" | "action" | "result" | "error";
+  text: string;
+  meta: Record<string, any>;
+  timestamp: string;
+}
+
+export interface RoutingExplanation {
+  mode: AgentMode;
+  score: number;
+  threshold: number;
+  factors: {
+    topicLength: number;
+    detectedDomains: string[];
+    deepMode: boolean;
+    minCitations: number;
+    requireRecent: boolean;
+  };
+  reasoning: string;
+}
+
+export interface CreateRunResponse {
+  run_id: string;
+  mode: AgentMode;
+  routing: RoutingExplanation;
+}

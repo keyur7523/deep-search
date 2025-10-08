@@ -13,6 +13,12 @@ import type {
   GetRunsResponse,
   GetReportResponse
 } from './types'
+import type { 
+  AgentMode, 
+  AgentGraph, 
+  AgentEvent, 
+  CreateRunResponse 
+} from "./types";
 
 /**
  * Wrapper for fetch with error handling
@@ -192,6 +198,110 @@ export async function cancelRun(runId: string): Promise<void> {
     logError('cancelRun', error, { runId })
     throw error
   }
+}
+
+/**
+ * Create a new research run with intelligent routing (V2)
+ */
+export async function createRunV2(
+  projectId: string,
+  config?: {
+    forceMode?: AgentMode;
+    deepMode?: boolean;
+    minCitations?: number;
+    requireRecent?: boolean;
+    maxParagraphs?: number;
+    rounds?: number;
+    resultsPerRound?: number;
+    keepPerParagraph?: number;
+    searchProvider?: string;
+  }
+): Promise<CreateRunResponse> {
+  const res = await fetch(`${API_BASE}/runs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ 
+      projectId, 
+      config: config || {} 
+    }),
+  });
+  
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(`Failed to create run: ${error}`);
+  }
+  
+  return res.json();
+}
+
+/**
+ * Override agent mode for a run (before it starts)
+ */
+export async function setAgentMode(
+  runId: string, 
+  mode: AgentMode
+): Promise<{ status: string; mode: AgentMode }> {
+  const res = await fetch(`${API_BASE}/runs/${runId}/agent-mode`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(`Failed to set agent mode: ${error}`);
+  }
+  
+  return res.json();
+}
+
+/**
+ * Get task graph for visualization
+ */
+export async function getTaskGraph(runId: string): Promise<AgentGraph> {
+  const res = await fetch(`${API_BASE}/runs/${runId}/graph`);
+  
+  if (!res.ok) {
+    throw new Error("Failed to fetch task graph");
+  }
+  
+  return res.json();
+}
+
+/**
+ * Subscribe to agent events via Server-Sent Events
+ */
+export function subscribeToAgentEvents(
+  runId: string,
+  onEvent: (event: AgentEvent) => void,
+  onDone?: () => void,
+  onError?: (error: Error) => void
+): () => void {
+  const eventSource = new EventSource(
+    `${API_BASE}/runs/${runId}/agent-events/stream`
+  );
+  
+  eventSource.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.done) {
+        eventSource.close();
+        onDone?.();
+      } else {
+        onEvent(data);
+      }
+    } catch (error) {
+      console.error("Failed to parse event:", error);
+    }
+  };
+  
+  eventSource.onerror = (error) => {
+    console.error("EventSource error:", error);
+    eventSource.close();
+    onError?.(new Error("Connection error"));
+  };
+  
+  return () => eventSource.close();
 }
 
 /**

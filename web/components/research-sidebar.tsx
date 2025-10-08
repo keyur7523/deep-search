@@ -8,13 +8,22 @@ import { Separator } from "@/components/ui/separator"
 import { TopicForm } from "@/components/topic-form"
 import { Plus, Clock, CheckCircle, XCircle, Pause, Sparkles } from "lucide-react"
 import { ResearchThread } from "@/lib/types"
+import type { AgentMode } from "@/lib/types"
 import { formatDistanceToNow } from "date-fns"
 
 interface ResearchSidebarProps {
   threads: ResearchThread[]
   currentThreadId?: string
   onThreadSelect: (threadId: string) => void
-  onNewResearch: (data: { topic: string; maxParagraphs: number; roundsPerParagraph: number; searchProvider?: string }) => void
+  onNewResearch: (data: { 
+    topic: string
+    maxParagraphs: number
+    roundsPerParagraph: number
+    searchProvider?: string
+    mode?: AgentMode
+    deepMode?: boolean
+    minCitations?: number
+  }) => void
   isLoading?: boolean
 }
 
@@ -59,7 +68,15 @@ export function ResearchSidebar({
     }
   }
 
-  const handleNewResearch = (data: any) => {
+  const handleNewResearch = (data: {
+    topic: string
+    maxParagraphs: number
+    roundsPerParagraph: number
+    searchProvider?: string
+    mode?: AgentMode
+    deepMode?: boolean
+    minCitations?: number
+  }) => {
     onNewResearch(data)
     setShowNewForm(false)
   }

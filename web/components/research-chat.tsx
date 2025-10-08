@@ -22,7 +22,8 @@ import {
 } from "lucide-react"
 import { useRunMessages } from "@/hooks/useRunMessages"
 import { API_BASE } from "@/lib/config"
-import { createProject, startRun } from "@/lib/api"
+import { createProject, createRunV2, subscribeToAgentEvents } from "@/lib/api"
+import type { AgentMode } from "@/lib/types"
 import ReactMarkdown from "react-markdown"
 import jsPDF from "jspdf"
 
@@ -46,9 +47,9 @@ const MIN_TOPIC_LENGTH = 10
 export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat }: ResearchChatProps) {
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const msgs = useRunMessages(API_BASE, runId)
+  const regularMsgs = useRunMessages(API_BASE, runId)
+  const [agentEvents, setAgentEvents] = useState<any[]>([])
   const [reportContent, setReportContent] = useState<string>("")
-  const [isLoadingReport, setIsLoadingReport] = useState(false)
   const [isExportingPDF, setIsExportingPDF] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showModelDropdown, setShowModelDropdown] = useState(false)
@@ -58,6 +59,37 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   const [depth, setDepth] = useState(3)
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [researchMode, setResearchMode] = useState<AgentMode>("auto")
+
+  // Subscribe to agent events for agentic runs
+  useEffect(() => {
+    if (!runId) return
+    
+    const unsubscribe = subscribeToAgentEvents(
+      runId,
+      (event) => {
+        setAgentEvents(prev => [...prev, {
+          _id: `${Date.now()}-${Math.random()}`,
+          role: 'assistant',
+          kind: event.kind,
+          text: event.text,
+          t: new Date().toISOString(),
+          meta: event.meta
+        }])
+      },
+      () => {
+        // Agent events stream completed
+      },
+      (error) => {
+        // Silently handle agent event errors
+      }
+    )
+    
+    return unsubscribe
+  }, [runId])
+
+  // Combine regular messages and agent events
+  const msgs = regularMsgs.length > 0 ? regularMsgs : agentEvents
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -78,10 +110,9 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   }, [])
 
   useEffect(() => {
-    if (runId) {
-      setReportContent("")
-      setIsLoadingReport(false)
-    }
+    // Always clear state when runId changes (including when it becomes null)
+    setReportContent("")
+    setAgentEvents([])
   }, [runId])
 
   // Keyboard shortcuts
@@ -113,27 +144,21 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
       setIsCreating(true)
       setError(null)
       
-      console.log('1. Creating project:', { topic, sections })
-      
       // Create project
       const projectResponse = await createProject(topic, sections)
-      console.log('2. Project response:', projectResponse)
-      
-      // Extract project_id from response
       const projectId = projectResponse.project_id
-      console.log('3. Project ID:', projectId)
       
-      // Start run with the project ID
-      const runResponse = await startRun(
-        projectId,
-        depth,
-        MODEL_TO_PROVIDER[selectedModel] || 'hybrid'
-      )
-      console.log('4. Run response:', runResponse)
+      // Use V2 endpoint with agentic routing
+      const runResponse = await createRunV2(projectId, {
+        forceMode: researchMode === "auto" ? undefined : researchMode,
+        deepMode: depth > 3,
+        minCitations: depth * 5,
+        searchProvider: MODEL_TO_PROVIDER[selectedModel] || 'hybrid',
+        maxParagraphs: sections,
+        rounds: depth
+      })
       
-      // Extract run_id from response
       const runId = runResponse.run_id
-      console.log('5. Run ID:', runId)
       
       // Create run object for parent
       const newRun = {
@@ -141,7 +166,8 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
         title: topic,
         status: 'running',
         createdAt: new Date(),
-        progress: 0
+        progress: 0,
+        mode: runResponse.mode
       }
       
       // Notify parent components
@@ -161,32 +187,20 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
     }
   }
 
-  // Fetch report when research is complete 
-  useEffect(() => {
-    const isComplete = msgs.some(msg => msg.kind === 'complete')
-    if (isComplete && runId) {
-      // Always fetch when runId changes or completion detected
-      fetchReport()
-    }
-  }, [msgs, runId])
-
   const fetchReport = async () => {
     if (!runId) return
     
     try {
-      setIsLoadingReport(true)
       const response = await fetch(`${API_BASE}/runs/${runId}/report`)
       
       if (response.ok) {
         const data = await response.json()
-        setReportContent(data.markdown || "")
-      } else {
-        console.error('Failed to fetch report:', response.status, response.statusText)
+        if (data.markdown) {
+          setReportContent(data.markdown)
+        }
       }
     } catch (error) {
-      console.error('Failed to fetch report:', error)
-    } finally {
-      setIsLoadingReport(false)
+      // Silently fail - report not ready yet
     }
   }
 
@@ -310,12 +324,15 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
     if (role === 'user') return <User className="w-4 h-4" />
     
     switch (kind) {
+      case 'thinking':
       case 'status': return <Clock className="w-4 h-4" />
-      case 'query': return <Search className="w-4 h-4" />
+      case 'query':
+      case 'action': return <Search className="w-4 h-4" />
       case 'fetch': return <BookOpen className="w-4 h-4" />
       case 'reflect': return <CheckCircle className="w-4 h-4" />
       case 'draft': return <FileText className="w-4 h-4" />
-      case 'section': return <CheckCircle className="w-4 h-4" />
+      case 'section':
+      case 'result': return <CheckCircle className="w-4 h-4" />
       case 'complete': return <Sparkles className="w-4 h-4" />
       case 'error': return <AlertCircle className="w-4 h-4" />
       default: return <Bot className="w-4 h-4" />
@@ -326,12 +343,15 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
     if (role === 'user') return 'bg-primary text-primary-foreground'
     
     switch (kind) {
+      case 'thinking':
       case 'status': return 'bg-blue-100 text-blue-800 border border-blue-200'
-      case 'query': return 'bg-green-100 text-green-800 border border-green-200'
+      case 'query':
+      case 'action': return 'bg-green-100 text-green-800 border border-green-200'
       case 'fetch': return 'bg-purple-100 text-purple-800 border border-purple-200'
       case 'reflect': return 'bg-emerald-100 text-emerald-800 border border-emerald-200'
       case 'draft': return 'bg-orange-100 text-orange-800 border border-orange-200'
-      case 'section': return 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+      case 'section':
+      case 'result': return 'bg-emerald-100 text-emerald-800 border border-emerald-200'
       case 'complete': return 'bg-yellow-100 text-yellow-800 border border-yellow-200'
       case 'error': return 'bg-red-100 text-red-800 border border-red-200'
       default: return 'bg-muted text-muted-foreground'
@@ -354,7 +374,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   const renderMessageMetadata = (meta: any) => {
     if (!meta) return null
 
-    const { section, sources, academic, web, quality, citations, query, url } = meta
+    const { section, sources, academic, web, quality, citations, query, url, score, decision } = meta
 
     return (
       <div className="mt-2 space-y-1">
@@ -374,15 +394,21 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
           </div>
         )}
         
-        {quality && (
+        {(quality || score) && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>Quality: {quality.toFixed(1)}/10</span>
+            <span>Quality: {(quality || score)?.toFixed(1)}/10</span>
           </div>
         )}
         
         {citations && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span>{citations} citations</span>
+          </div>
+        )}
+        
+        {decision && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>Decision: {decision}</span>
           </div>
         )}
         
@@ -408,11 +434,38 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
     )
   }
 
-  const isComplete = msgs.some(msg => msg.kind === 'complete')
+  // Check if research is far enough along to show report panel
+  const paragraphCount = msgs.filter(m => m.kind === 'result' && m.text.includes('Created paragraph')).length
+  const agentsFinished = msgs.length > 0 && (
+    paragraphCount >= 3 || // If we have 3+ paragraphs, start trying to fetch report
+    paragraphCount >= sections || // Or if we have all requested sections
+    msgs[msgs.length - 1]?.text?.toLowerCase().includes('all tasks complete')
+  )
+  
+  const isComplete = agentsFinished || !!reportContent
   const isTopicValid = topic.trim().length >= MIN_TOPIC_LENGTH
   const topicError = topic.length > 0 && !isTopicValid 
     ? `Topic must be at least ${MIN_TOPIC_LENGTH} characters` 
     : null
+
+  // Fetch report when research is complete 
+  useEffect(() => {
+    if (!runId) return
+    if (!isComplete) return // Wait for agents to finish
+    if (reportContent) return // Already have report
+    
+    // Start polling immediately when agents finish
+    fetchReport()
+    
+    // Then poll every 3 seconds
+    const interval = setInterval(() => {
+      if (!reportContent) {
+        fetchReport()
+      }
+    }, 3000)
+    
+    return () => clearInterval(interval)
+  }, [runId, isComplete, reportContent])
 
   if (!runId) {
     return (
@@ -515,6 +568,26 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
                       ))}
                     </select>
                   </div>
+                  <div>
+                    <label htmlFor="mode-select" className="text-sm font-medium text-gray-700 block mb-2">
+                      Research Mode
+                    </label>
+                    <select 
+                      id="mode-select"
+                      value={researchMode} 
+                      onChange={(e) => setResearchMode(e.target.value as AgentMode)}
+                      className="w-full h-10 px-3 border border-gray-200 rounded-lg focus:border-purple-400 focus:ring-2 focus:ring-purple-400/20 outline-none"
+                    >
+                      <option value="auto">Auto (Recommended)</option>
+                      <option value="simple">Simple (Fast)</option>
+                      <option value="agentic">Agentic (Deep)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      {researchMode === "auto" && "System decides based on topic"}
+                      {researchMode === "simple" && "Fast, linear pipeline"}
+                      {researchMode === "agentic" && "Multi-agent with quality gates"}
+                    </p>
+                  </div>
                 </div>
               </div>
             )}
@@ -580,7 +653,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
                   {isComplete ? 'completed' : 'active'}
                 </Badge>
                 <span className="text-xs text-muted-foreground">
-                  {msgs.length} messages
+                  {msgs.length} events
                 </span>
               </div>
             </div>
@@ -612,14 +685,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
               </div>
               <div className="flex-1 overflow-auto">
                 <div className="p-4 md:p-6">
-                  {isLoadingReport ? (
-                    <div className="flex items-center justify-center py-8">
-                      <div className="text-center">
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
-                        <p className="text-sm text-muted-foreground">Loading report...</p>
-                      </div>
-                    </div>
-                  ) : reportContent ? (
+                  {reportContent ? (
                     <div className="prose prose-sm max-w-none markdown-content">
                       <ReactMarkdown
                         components={{
@@ -641,18 +707,21 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
                     </div>
                   ) : (
                     <div className="bg-muted/50 p-4 rounded-lg">
-                      <p className="text-sm text-muted-foreground">
-                        Research completed successfully with {msgs.filter(m => m.kind === 'fetch').length} sources analyzed.
-                      </p>
-                      <p className="text-sm text-muted-foreground mt-2">
-                        Report generation in progress...
-                      </p>
-                      <div className="mt-4 space-y-2">
-                        {msgs.filter(m => m.kind === 'section').map((msg, i) => (
-                          <div key={i} className="text-sm bg-background p-2 rounded border">
-                            {msg.text}
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="animate-pulse">
+                          <div className="flex gap-1">
+                            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
                           </div>
-                        ))}
+                        </div>
+                        <p className="text-sm font-medium text-foreground">Generating report...</p>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Research complete. Compiling {paragraphCount} sections into final report.
+                      </p>
+                      <div className="mt-3 text-xs text-muted-foreground">
+                        This may take 10-30 seconds depending on report length.
                       </div>
                     </div>
                   )}
@@ -669,8 +738,8 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
               </div>
               <div className="flex-1 overflow-auto">
                 <div className="p-2 space-y-2">
-                  {msgs.map((message) => (
-                    <div key={message._id} className="p-2 rounded border bg-background">
+                  {msgs.map((message, idx) => (
+                    <div key={message._id || idx} className="p-2 rounded border bg-background">
                       <div className="flex items-center gap-2 mb-1">
                         <div className={`w-6 h-6 rounded-full flex items-center justify-center ${getMessageColor(message.kind, message.role)}`}>
                           {getMessageIcon(message.kind, message.role)}
@@ -700,11 +769,11 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
               {msgs.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
                   <Bot className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                  <p>No messages yet</p>
+                  <p>Agents are working...</p>
                 </div>
               ) : (
-                msgs.map((message) => (
-                  <div key={message._id} className="flex gap-3">
+                msgs.map((message, idx) => (
+                  <div key={message._id || idx} className="flex gap-3">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getMessageColor(message.kind, message.role)}`}>
                       {getMessageIcon(message.kind, message.role)}
                     </div>

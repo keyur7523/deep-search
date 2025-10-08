@@ -12,6 +12,13 @@ import json
 from models.db import db, ensure_indexes
 from services.s3util import presign_put_url
 from logic.research import start_run_task, get_run_progress, get_outline, get_report, get_research_threads, get_research_messages, get_research_thread
+from agents.research_agentic import start_agentic_run
+from models.schemas import (
+    CreateRunRequest, AgentModeRequest, 
+    AgentGraphResponse, AgentGraphNode, AgentGraphEdge
+)
+from models.db import init_agent_collections, create_agent_event
+from agents import route_research_mode, explain_routing_decision
 
 # Configure logging
 logging.basicConfig(
@@ -106,6 +113,11 @@ async def _startup():
         logger.info("📊 Ensuring database indexes...")
         await ensure_indexes()
         logger.info("✅ Database indexes created successfully")
+        
+        # NEW: Initialize agent collections
+        logger.info("🤖 Initializing agent collections...")
+        await init_agent_collections()
+        logger.info("✅ Agent collections initialized")
     except Exception as e:
         logger.error(f"❌ Startup index error: {e}")
         logger.warning("⚠️ Continuing startup despite index error...")
@@ -204,7 +216,6 @@ async def run_status(run_id: str, user: User = Depends(get_user)):
 async def run_outline(run_id: str, user: User = Depends(get_user)):
     items = await get_outline(run_id, user.sub)
     return {"items": items}
-
 
 @app.get("/runs/{run_id}/report")
 async def run_report(run_id: str, user: User = Depends(get_user)):
@@ -435,5 +446,204 @@ async def s3_presign(
 ):
     url = presign_put_url(key, content_type)
     return {"url": url}
+
+@app.post("/runs")
+async def create_run_v2(
+    request: CreateRunRequest,
+    user: User = Depends(get_user)
+):
+    """
+    Create research run with automatic simple/agentic routing.
+    
+    Body:
+        projectId: MongoDB project ID
+        config: {
+            forceMode?: "simple" | "agentic"  // Override routing
+            deepMode?: boolean                 // Request thorough research
+            minCitations?: number              // Minimum sources required
+            requireRecent?: boolean            // Prioritize recent papers
+            maxParagraphs?: number             // Report length
+        }
+    """
+    logger.info(f"🔄 V2 run creation for project: {request.projectId}")
+    
+    try:
+        pid = ObjectId(request.projectId)
+    except Exception:
+        raise HTTPException(400, "Invalid project ID")
+    
+    # Get project to extract topic
+    project = await db().projects.find_one({"_id": pid, "userId": user.sub})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    
+    topic = project.get("title", "")
+    logger.info(f"📋 Topic: {topic}")
+    
+    # Determine mode using coordinator
+    mode = route_research_mode(topic, request.config)
+    routing_info = explain_routing_decision(topic, request.config)
+    logger.info(f"🎯 Routing decision: {mode} (score: {routing_info['score']})")
+    logger.info(f"💡 Reasoning: {routing_info['reasoning']}")
+    
+    # Create run document
+    from datetime import datetime
+    run_doc = {
+        "projectId": pid,
+        "status": "queued",
+        "mode": mode,
+        "config": request.config,
+        "routing": routing_info,
+        "createdAt": asyncio.get_event_loop().time(),
+    }
+    res = await db().runs.insert_one(run_doc)
+    run_id = str(res.inserted_id)
+    
+    # Dispatch to appropriate pipeline
+    if mode == "simple":
+        logger.info(f"🚀 Starting simple pipeline for run: {run_id}")
+        asyncio.create_task(start_run_task(run_id))
+    else:
+        logger.info(f"🤖 Starting agentic pipeline for run: {run_id}")
+        asyncio.create_task(start_agentic_run(run_id))
+    
+    return {
+        "run_id": run_id,
+        "mode": mode,
+        "routing": routing_info
+    }
+
+@app.post("/runs/{run_id}/agent-mode")
+async def set_agent_mode(
+    run_id: str, 
+    request: AgentModeRequest,
+    user: User = Depends(get_user)
+):
+    """
+    Override agent mode for a run.
+    Only works before run starts.
+    """
+    try:
+        rid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(400, "Invalid run ID")
+    
+    run = await db().runs.find_one({"_id": rid})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    
+    if run.get("status") not in ["queued", "planning"]:
+        raise HTTPException(
+            400, 
+            detail="Cannot change mode after run has started"
+        )
+    
+    await db().runs.update_one(
+        {"_id": rid},
+        {"$set": {"mode": request.mode}}
+    )
+    
+    logger.info(f"🔄 Mode changed to {request.mode} for run: {run_id}")
+    return {"status": "ok", "mode": request.mode}
+
+@app.get("/runs/{run_id}/graph", response_model=AgentGraphResponse)
+async def get_task_graph(run_id: str, user: User = Depends(get_user)):
+    """
+    Return current task DAG for visualization.
+    
+    Response:
+        nodes: [{id, type, status, label}]
+        edges: [{source, target}]
+    """
+    try:
+        rid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(400, "Invalid run ID")
+    
+    tasks = await db().agentTasks.find(
+        {"runId": rid}
+    ).to_list(length=None)
+    
+    if not tasks:
+        return AgentGraphResponse(nodes=[], edges=[])
+    
+    # Build nodes
+    nodes = []
+    for task in tasks:
+        nodes.append(AgentGraphNode(
+            id=str(task["_id"]),
+            type=task["type"],
+            status=task["status"],
+            label=f"{task['type']} ({task['status']})"
+        ))
+    
+    # Build edges from parent relationships
+    edges = []
+    for task in tasks:
+        if task.get("parentId"):
+            edges.append(AgentGraphEdge(
+                source=str(task["parentId"]),
+                target=str(task["_id"])
+            ))
+    
+    return AgentGraphResponse(nodes=nodes, edges=edges)
+
+@app.get("/runs/{run_id}/agent-events/stream")
+async def stream_agent_events(run_id: str):
+    """
+    Server-Sent Events stream of agent activities.
+    
+    Events:
+        data: {"agent": "Strategy", "kind": "thinking", "text": "...", ...}
+    """
+    try:
+        rid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(400, "Invalid run ID")
+    
+    async def event_generator():
+        from datetime import datetime
+        
+        # Send existing events first
+        existing = await db().agentEvents.find(
+            {"runId": rid}
+        ).sort("timestamp", 1).to_list(length=100)
+        
+        for event in existing:
+            event["id"] = str(event["_id"])
+            event["runId"] = str(event["runId"])
+            event["taskId"] = str(event["taskId"])
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+        
+        # Then poll for new events
+        last_seen = existing[-1]["timestamp"] if existing else datetime.utcnow()
+        
+        while True:
+            new_events = await db().agentEvents.find({
+                "runId": rid,
+                "timestamp": {"$gt": last_seen}
+            }).sort("timestamp", 1).to_list(length=10)
+            
+            for event in new_events:
+                event["id"] = str(event["_id"])
+                event["runId"] = str(event["runId"])
+                event["taskId"] = str(event["taskId"])
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+                last_seen = event["timestamp"]
+            
+            # Check if run is done
+            run = await db().runs.find_one({"_id": rid})
+            if run and run.get("status") == "done":
+                yield "data: {\"done\": true}\n\n"
+                break
+            
+            await asyncio.sleep(1)  # Poll every second
+    
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=headers
+    )
 
 # uvicorn app:app --host 0.0.0.0 --port 8000

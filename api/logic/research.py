@@ -785,10 +785,22 @@ async def get_outline(run_id: str, user_sub: str):
 
 async def get_report(run_id: str, user_sub: str):
     rid = ObjectId(run_id)
+    
+    # First check if report is stored in runs collection (agentic runs)
+    run = await db().runs.find_one({"_id": rid})
+    if run and run.get("report"):
+        return {
+            "markdown": run.get("report", ""),
+            "citations": run.get("citations", {})
+        }
+    
+    # Then check reports collection (simple runs)
     rep = await db().reports.find_one({"runId": rid}) \
        or await db().reports.find_one({"RunId": rid})
     if rep: 
         return {"markdown": rep.get("markdown","")}
+    
+    # Fallback: stitch paragraphs together
     paras = [p async for p in db().paragraphs.find({"runId": rid}).sort("idx", 1)]
     if paras:
         md = "\n\n".join(p.get("draftMd","") for p in paras)

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect } from "react" 
 import { ResearchChat } from "@/components/research-chat"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { 

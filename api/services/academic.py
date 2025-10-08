@@ -6,9 +6,32 @@ Enhanced with comprehensive journal ranking and quality scoring
 import os, httpx, logging
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
+import asyncio
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+def _safe_int(value: Any, default: int = 0, max_val: int = 2147483647) -> int:
+    """Convert to safe MongoDB integer, capping at max value"""
+    try:
+        val = int(value) if value else default
+        return min(max(val, -2147483648), max_val)
+    except:
+        return default
+
+async def search_serpapi(query: str, num_results: int = 8) -> List[Dict]:
+    """
+    Wrapper for agent system compatibility.
+    Uses Semantic Scholar as primary source.
+    """
+    return await semantic_scholar_search(query, num_results)
+
+async def search_crossref(query: str, rows: int = 8) -> List[Dict]:
+    """
+    Wrapper for agent system compatibility.
+    Uses deep academic search combining multiple sources.
+    """
+    return await deep_academic_search(query, rows)
 
 # === Semantic Scholar API (Free, no key required) ===
 async def semantic_scholar_search(query: str, top: int = 10) -> List[Dict]:
@@ -16,6 +39,7 @@ async def semantic_scholar_search(query: str, top: int = 10) -> List[Dict]:
     Search Semantic Scholar for peer-reviewed papers
     Free API, high-quality academic sources with citations
     """
+    await asyncio.sleep(1)
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": query,
@@ -47,7 +71,7 @@ async def semantic_scholar_search(query: str, top: int = 10) -> List[Dict]:
                 "snippet": paper.get("abstract", "")[:500] if paper.get("abstract") else "",
                 "authors": author_text,
                 "year": paper.get("year", ""),
-                "citations": paper.get("citationCount", 0),
+                "citations": _safe_int(paper.get("citationCount", 0)),
                 "venue": paper.get("venue", ""),
                 "pdf_url": paper.get("openAccessPdf", {}).get("url") if paper.get("openAccessPdf") else None,
                 "doi": paper.get("externalIds", {}).get("DOI"),
@@ -288,7 +312,7 @@ def score_source_quality(source: Dict[str, Any]) -> float:
     score += 0.15  # Base academic bonus
     
     # === CITATION COUNT (Log scale with diminishing returns) ===
-    citations = source.get("citations", 0)
+    citations = _safe_int(source.get("citations", 0))
     if citations > 0:
         # Logarithmic scoring: 10 citations = 0.05, 100 = 0.10, 1000 = 0.15, 10000+ = 0.20
         import math

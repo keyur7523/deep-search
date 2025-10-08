@@ -1,5 +1,8 @@
 import os, httpx, urllib.parse
 from typing import List, Dict
+import logging
+
+logger = logging.getLogger(__name__)    
 
 def _get_provider():
     return os.getenv("SEARCH_PROVIDER", "serpapi")
@@ -34,6 +37,8 @@ async def web_search(query: str, top: int = 8, provider: str = None) -> List[Dic
 async def _hybrid_search(query: str, top: int) -> List[Dict]:
     """Combine web search and Google Scholar for comprehensive research"""
     import asyncio
+
+    logger.info(f"🔍 Starting hybrid search for: '{query}' (top={top})")
     
     # Split results between web and academic sources
     web_count = max(1, top // 2)  # At least 1 web result
@@ -72,6 +77,20 @@ async def _hybrid_search(query: str, top: int) -> List[Dict]:
     
     return combined[:top]
 
+async def hybrid_search(query: str, limit: int = 8) -> List[Dict]:
+    """
+    Public wrapper for hybrid search.
+    Used by the agent system.
+    """
+    return await _hybrid_search(query, limit)
+
+async def brave_search(query: str, count: int = 8) -> List[Dict]:
+    """
+    Public wrapper for Brave search.
+    Used by the agent system.
+    """
+    return await _brave(query, count)
+
 async def _serpapi(query: str, top: int) -> List[Dict]:
     serp_key = _get_serp_key()
     if not serp_key: return []
@@ -85,6 +104,7 @@ async def _serpapi(query: str, top: int) -> List[Dict]:
     out = []
     for r in results:
         out.append({"title": r.get("title",""), "url": r.get("link",""), "snippet": r.get("snippet",""), "score": 0})
+    logger.info(f"🔍 SerpAPI returned {len(out)} results")
     return out
 
 async def _brave(query: str, top: int) -> List[Dict]:
@@ -98,6 +118,7 @@ async def _brave(query: str, top: int) -> List[Dict]:
         r.raise_for_status()
         data = r.json()
     results = data.get("web",{}).get("results",[])[:top]
+    logger.info(f"🔍 Brave returned {len(results)} results")
     return [{"title": r.get("title",""), "url": r.get("url",""), "snippet": r.get("description",""), "score": 0} for r in results]
 
 async def _scholar(query: str, top: int) -> List[Dict]:
@@ -150,7 +171,8 @@ async def _scholar(query: str, top: int) -> List[Dict]:
             "year": year,
             "citations": r.get("inline_links", {}).get("cited_by", {}).get("total", 0)
         })
-    
+
+    logger.info(f"🔍 Google Scholar returned {len(out)} results")
     return out
 
 def _mock_search(query: str, top: int = 8) -> List[Dict]:

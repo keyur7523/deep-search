@@ -514,18 +514,18 @@ async def write_paragraph_with_context(
     # Vary writing style based on position in report
     if paragraph_index == 1:
         style_guide = """POSITION: Opening section - Set the stage.
-- Start with context-setting
-- Introduce key concepts before technical details
-- Use clear, accessible language initially
-- Example openings: "Understanding X requires...", "Recent advances in...", "The field of X has..."
-"""
+                         - Start with context-setting
+                         - Introduce key concepts before technical details
+                         - Use clear, accessible language initially
+                         - Example openings: "Understanding X requires...", "Recent advances in...", "The field of X has..."
+                    """
     elif paragraph_index == total_paragraphs:
         style_guide = """POSITION: Closing section - Synthesize findings.
-- Connect back to earlier sections
-- Highlight implications and future directions
-- Use synthesizing language
-- Example openings: "Emerging evidence suggests...", "Integration of findings reveals...", "Clinical applications demonstrate..."
-"""
+                        - Connect back to earlier sections
+                        - Highlight implications and future directions
+                        - Use synthesizing language
+                        - Example openings: "Emerging evidence suggests...", "Integration of findings reveals...", "Clinical applications demonstrate..."
+                        """
     else:
         style_guide = f"""POSITION: Middle section {paragraph_index} of {total_paragraphs} - Build the argument.
 - Build on previous sections
@@ -535,7 +535,16 @@ async def write_paragraph_with_context(
 - Example openings: "Analysis of X reveals...", "Multiple studies indicate...", "Key findings demonstrate...", "Evidence from X shows..."
 """
     
-    system = f"""You are an academic research writer. Write a detailed, well-cited paragraph.
+    user = f"""Sources ({len(source_list)} available):
+            {_json.dumps(source_list, ensure_ascii=False)}
+            
+            Visuals: {len(visuals)} available
+            
+            Write a comprehensive paragraph that addresses "{brief}" using these sources while staying aligned with "{topic}".
+            
+            This is paragraph {paragraph_index} of {total_paragraphs}, so adjust your writing style accordingly."""
+
+    system = f"""You are an academic research writer. Write a detailed, evidence-based paragraph using ONLY the provided sources.
 
 CONTEXT:
 - Original Topic: "{topic}"
@@ -544,20 +553,32 @@ CONTEXT:
 
 {style_guide}
 
-REQUIREMENTS:
-1. LENGTH: 300-400 words with substantive content
-2. FOCUS: Address ONLY "{brief}" - stay on topic
-3. CITATIONS: Add [1], [2], etc. after factual claims
-   - Use ONLY [1] through [{len(source_list)}] 
-   - DO NOT invent citation numbers
-   - Every [n] must correspond to source n from the provided list
-4. DATA: Include specific numbers, percentages, study details
-5. DEPTH: Explain mechanisms or processes from sources
-6. ALIGNMENT: Every sentence must relate to both the section goal AND original topic
-7. VARIETY: Avoid repetitive openings like:
-   - "X is a complex process..."
-   - "The comparative efficacy of..."
-   - "[Topic] + [adjective] + [noun phrase]..."
+CRITICAL REQUIREMENTS - READ CAREFULLY:
+1. LENGTH: 250-400 words - but ONLY if sources support it
+   - If sources are thin, write 150-250 words acknowledging limitations
+   - NEVER pad content with unsourced information
+   
+2. SOURCE FIDELITY: Write ONLY what is explicitly in the provided source snippets
+   - DO NOT add statistics, percentages, or study details not in the sources
+   - DO NOT reference "RCTs," "meta-analyses," or "systematic reviews" unless sources mention them
+   - DO NOT invent study names, researcher names, or institutions
+   
+3. CITATIONS: Use [1], [2], etc. ONLY for provided sources
+   - Use ONLY [1] through [{len(source_list)}]
+   - Every factual claim MUST be followed by a citation
+   - If a claim isn't in sources, DON'T make the claim
+   
+4. HANDLING INSUFFICIENT SOURCES:
+   - If sources lack quantitative data, acknowledge this: "Available sources provide qualitative insights but lack quantitative measurements..."
+   - If sources don't fully answer the section goal, state: "Current evidence addresses [what they cover] but gaps remain in [what's missing]..."
+   - Better to write an honest 200-word paragraph than a fabricated 400-word one
+
+5. QUALITY SCORING:
+   - 0.8-1.0: Multiple peer-reviewed sources with quantitative data from sources
+   - 0.6-0.7: Good qualitative detail from sources
+   - 0.4-0.5: Limited but accurate coverage from available sources
+   - 0.2-0.3: Thin sources - honest acknowledgment of limitations
+   - 0.0-0.1: Essentially no usable sources
 
 Return JSON: {{
   "draftMd": "markdown paragraph text",
@@ -566,25 +587,7 @@ Return JSON: {{
   "visualsUsed": [1, 2]
 }}
 
-Quality scoring:
-- 0.8-1.0: Multiple peer-reviewed sources, quantitative data, mechanisms explained, stays perfectly on-topic
-- 0.6-0.7: Good sources with detail, mostly on-topic with minor drift
-- 0.4-0.5: Basic coverage from available sources
-- 0.0-0.3: Insufficient sources or significant topic drift
-
-CRITICAL: 
-- If sources drift off-topic, acknowledge limitations and focus on relevant parts only
-- Never fabricate citation numbers outside the range [1-{len(source_list)}]
-- Every citation number MUST map to an actual source"""
-
-    user = f"""Sources ({len(source_list)} available):
-{_json.dumps(source_list, ensure_ascii=False)}
-
-Visuals: {len(visuals)} available
-
-Write a comprehensive paragraph that addresses "{brief}" using these sources while staying aligned with "{topic}".
-
-This is paragraph {paragraph_index} of {total_paragraphs}, so adjust your writing style accordingly."""
+REMEMBER: Scientific integrity requires saying "sources don't provide this data" rather than inventing plausible-sounding claims. Your reputation depends on accuracy, not word count."""
 
     try:
         out = await _chat(cfg["model_writer"], [
@@ -774,6 +777,20 @@ Create a complete academic report that:
         import traceback
         traceback.print_exc()
         raise  # Re-raise so caller knows it failed
+
+async def call_llm(messages: List[Dict[str, str]], temperature: float = 0.2, json_mode: bool = False, max_tokens: int = 1000) -> str:
+    """
+    Compatibility wrapper for _chat function.
+    Used by the agent system.
+    """
+    config = _get_config()
+    return await _chat(
+        config["model_planner"],  # Use planner model for agents
+        messages,
+        temperature,
+        json_mode=json_mode,
+        max_tokens=max_tokens
+    )
 
 async def aggregate_report(topic: str, paragraphs: list[dict]) -> str:
     """Fallback: Simple aggregation with basic intro/conclusion"""
