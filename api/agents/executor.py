@@ -35,42 +35,77 @@ class TaskExecutor:
         """
         self.running = True
         logger.info(f"Starting task execution for run: {self.run_id}")
-        
+        stuck_check_count = 0
+        max_stuck_checks = 30  # Maximum ~60 seconds of waiting before giving up
+
         try:
             await self._update_run_status("running")
-            
+
             # Main execution loop
             while self.running:
                 # Get tasks that are ready to execute
                 pending = await get_pending_tasks(self.run_id, limit=5)
-                
+
                 if not pending:
-                    # No more tasks - check if we're done
+                    # No more tasks - check if we're done or stuck
                     all_tasks = await db().agentTasks.find({
                         "runId": ObjectId(self.run_id)
                     }).to_list(length=None)
-                    
-                    all_done = all(t["status"] == "done" for t in all_tasks)
-                    if all_done or not all_tasks:
+
+                    if not all_tasks:
+                        logger.info("No tasks found - completing run")
+                        await self._update_run_status("done")
+                        break
+
+                    # Check task statuses
+                    done_count = sum(1 for t in all_tasks if t["status"] == "done")
+                    failed_count = sum(1 for t in all_tasks if t["status"] == "failed")
+                    running_count = sum(1 for t in all_tasks if t["status"] == "running")
+                    pending_count = sum(1 for t in all_tasks if t["status"] == "pending")
+
+                    logger.info(f"Task status: done={done_count}, failed={failed_count}, running={running_count}, pending={pending_count}")
+
+                    # All tasks complete
+                    if done_count == len(all_tasks):
                         logger.info("All tasks complete")
                         await self._update_run_status("done")
                         break
-                    else:
-                        # Tasks exist but none are pending - might be stuck
-                        logger.warning("Tasks exist but none pending - checking for failures")
-                        await asyncio.sleep(2)
-                        continue
-                
-                # Execute pending tasks concurrently (up to 3 at a time)
-                batch = pending[:3]
-                await asyncio.gather(
-                    *[self._execute_task(task) for task in batch],
-                    return_exceptions=True
-                )
-                
+
+                    # Some tasks failed - stop execution
+                    if failed_count > 0 and running_count == 0 and pending_count == 0:
+                        logger.error(f"{failed_count} tasks failed - stopping execution")
+                        await self._update_run_status("failed")
+                        break
+
+                    # Stuck check: no pending tasks returned but pending tasks exist
+                    # This can happen when parent tasks failed
+                    if pending_count > 0 and failed_count > 0:
+                        logger.error("Pending tasks blocked by failed parent tasks - stopping")
+                        await self._update_run_status("failed")
+                        break
+
+                    # Safety: prevent infinite loop with stuck check counter
+                    stuck_check_count += 1
+                    if stuck_check_count >= max_stuck_checks:
+                        logger.error(f"Executor stuck for {stuck_check_count * 2}s - forcing exit")
+                        await self._update_run_status("failed")
+                        break
+
+                    logger.warning(f"No runnable tasks (attempt {stuck_check_count}/{max_stuck_checks}) - waiting...")
+                    await asyncio.sleep(2)
+                    continue
+
+                # Reset stuck counter when we have work to do
+                stuck_check_count = 0
+
+                # Execute pending tasks sequentially to avoid API rate limits
+                # (Semantic Scholar and other APIs have strict rate limits)
+                for task in pending[:3]:
+                    await self._execute_task(task)
+
                 # Small delay between batches
                 await asyncio.sleep(0.5)
-                
+
         except Exception as e:
             logger.error(f"Executor error: {e}")
             await self._update_run_status("failed")

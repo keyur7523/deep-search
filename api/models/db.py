@@ -28,12 +28,12 @@ def get_client():
             raise RuntimeError("MONGODB_URI not set")
         
         logger.info(f"🔗 Connecting to MongoDB Atlas...")
-        logger.info(f"🔐 URI: {mongodb_uri[:20]}...{mongodb_uri[-10:]}")
+        # Use certifi for proper TLS certificate validation
+        import certifi
         _client = AsyncIOMotorClient(
-            mongodb_uri, 
+            mongodb_uri,
             serverSelectionTimeoutMS=5000,
-            tlsCAFile=None,
-            tlsAllowInvalidCertificates=True
+            tlsCAFile=certifi.where()
         )
         logger.info("✅ MongoDB client created successfully")
     return _client

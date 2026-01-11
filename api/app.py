@@ -1,5 +1,6 @@
 import os, asyncio
 import logging
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,7 @@ from services.s3util import presign_put_url
 from logic.research import start_run_task, get_run_progress, get_outline, get_report, get_research_threads, get_research_messages, get_research_thread
 from agents.research_agentic import start_agentic_run
 from models.schemas import (
-    CreateRunRequest, AgentModeRequest, 
+    CreateRunRequest, AgentModeRequest,
     AgentGraphResponse, AgentGraphNode, AgentGraphEdge
 )
 from models.db import init_agent_collections, create_agent_event
@@ -30,26 +31,68 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 logger.info("Environment variables loaded")
 
-app = FastAPI(title="Deep Research API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events."""
+    # Startup
+    logger.info("🚀 Starting up Deep Research API...")
+
+    # Check environment variables
+    logger.info("🔍 Checking environment variables...")
+    api_key = os.getenv("LLM_API_KEY")
+    base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+    model_planner = os.getenv("LLM_MODEL_PLANNER", "gpt-4o-mini")
+    model_writer = os.getenv("LLM_MODEL_WRITER", "gpt-4o-mini")
+
+    logger.info(f"🔑 LLM_API_KEY: {'✅ Set' if api_key else '❌ Missing'}")
+    logger.info(f"🌐 LLM_BASE_URL: {base_url}")
+    logger.info(f"🧠 LLM_MODEL_PLANNER: {model_planner}")
+    logger.info(f"✍️ LLM_MODEL_WRITER: {model_writer}")
+
+    if not api_key:
+        logger.error("❌ LLM_API_KEY is not set!")
+
+    try:
+        logger.info("📊 Ensuring database indexes...")
+        await ensure_indexes()
+        logger.info("✅ Database indexes created successfully")
+
+        # Initialize agent collections
+        logger.info("🤖 Initializing agent collections...")
+        await init_agent_collections()
+        logger.info("✅ Agent collections initialized")
+    except Exception as e:
+        logger.error(f"❌ Startup index error: {e}")
+        logger.warning("⚠️ Continuing startup despite index error...")
+
+    logger.info("🎉 Deep Research API startup complete!")
+
+    yield  # Application runs here
+
+    # Shutdown (if needed)
+    logger.info("👋 Shutting down Deep Research API...")
+
+app = FastAPI(title="Deep Research API", version="0.1.0", lifespan=lifespan)
 logger.info("FastAPI app created")
 
 # Allow localhost for development and production URLs
+# SECURITY: Always explicitly configure allowed origins via WEB_ORIGINS env var
 origins = [
     "http://localhost:3000",
-    "http://localhost:3001", 
+    "http://localhost:3001",
     "http://localhost:3002",
     "http://localhost:3003",
     "https://deep-search-ruby.vercel.app",
     "https://deep-search-lovat.vercel.app",
     "https://deep-search-two.vercel.app",
-    # Add your frontend domain here
+    # Add additional origins via WEB_ORIGINS env var (comma-separated)
     *[o.strip() for o in os.getenv("WEB_ORIGINS", "").split(",") if o.strip()]
 ]
 
-# For Render deployment, be more permissive with CORS
+# SECURITY: Never use "*" for CORS in production
+# If you need additional origins on Render, add them via WEB_ORIGINS env var
 if os.getenv("RENDER"):
-    origins = ["*"]  # Allow all origins on Render
-    logger.info("Running on Render - using permissive CORS")
+    logger.info("Running on Render - ensure WEB_ORIGINS is configured for production")
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,8 +106,24 @@ logger.info(f"CORS origins configured: {origins}")
 class User(BaseModel):
     sub: str
 
+# SECURITY WARNING: This is a placeholder authentication.
+# In production, implement proper JWT validation or OAuth2.
+# Current implementation allows ALL requests as "demo-user".
+_AUTH_WARNING_LOGGED = False
+
 async def get_user(request: Request) -> User:
-    # TODO: replace with JWT validation. For now, a static demo user is used.
+    """
+    SECURITY: Replace with proper authentication before production use!
+
+    Recommended implementations:
+    - JWT validation with proper secret key
+    - OAuth2 with your identity provider
+    - API key validation for service-to-service calls
+    """
+    global _AUTH_WARNING_LOGGED
+    if not _AUTH_WARNING_LOGGED and os.getenv("RENDER"):
+        logger.warning("⚠️ SECURITY: Using demo authentication in production! Implement proper auth.")
+        _AUTH_WARNING_LOGGED = True
     return User(sub="demo-user")
 
 def _ser_live(doc):
@@ -87,42 +146,6 @@ class NewRun(BaseModel):
     resultsPerRound: int = Field(default=int(os.getenv("RESULTS_PER_ROUND", 8)))
     keepPerParagraph: int = Field(default=int(os.getenv("KEEP_PER_PARAGRAPH", 6)))
     searchProvider: str = Field(default="hybrid")
-
-@app.on_event("startup")
-async def _startup():
-    logger.info("🚀 Starting up Deep Research API...")
-    
-    # Check environment variables
-    logger.info("🔍 Checking environment variables...")
-    api_key = os.getenv("LLM_API_KEY")
-    base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    model_planner = os.getenv("LLM_MODEL_PLANNER", "gpt-4o-mini")
-    model_writer = os.getenv("LLM_MODEL_WRITER", "gpt-4o-mini")
-    
-    logger.info(f"🔑 LLM_API_KEY: {'✅ Set' if api_key else '❌ Missing'}")
-    logger.info(f"🌐 LLM_BASE_URL: {base_url}")
-    logger.info(f"🧠 LLM_MODEL_PLANNER: {model_planner}")
-    logger.info(f"✍️ LLM_MODEL_WRITER: {model_writer}")
-    
-    if api_key:
-        logger.info(f"🔑 API Key starts with: {api_key[:10]}...")
-    else:
-        logger.error("❌ LLM_API_KEY is not set!")
-    
-    try:
-        logger.info("📊 Ensuring database indexes...")
-        await ensure_indexes()
-        logger.info("✅ Database indexes created successfully")
-        
-        # NEW: Initialize agent collections
-        logger.info("🤖 Initializing agent collections...")
-        await init_agent_collections()
-        logger.info("✅ Agent collections initialized")
-    except Exception as e:
-        logger.error(f"❌ Startup index error: {e}")
-        logger.warning("⚠️ Continuing startup despite index error...")
-    
-    logger.info("🎉 Deep Research API startup complete!")
 
 # --- Root and Health ---
 @app.get("/")
@@ -334,6 +357,8 @@ async def list_runs(user: User = Depends(get_user), limit: int = Query(5, ge=1, 
             "status": "completed" if run.get("status") == "done" else run.get("status", "unknown"),
             "progress": run.get("progress", 100 if run.get("status") == "done" else 0),
             "createdAt": run.get("createdAt"),
+            "mode": run.get("mode", "unknown"),
+            "routing": run.get("routing", {})
         })
     return {"runs": runs}
 
@@ -384,12 +409,20 @@ async def events_stream(run_id: str):
                     yield f"data: {json.dumps(_ser(ch['fullDocument']))}\n\n"
         except Exception:
             last_id = None
-            while True:
+            poll_count = 0
+            max_polls = 600  # Exit after ~10 minutes of polling
+            while poll_count < max_polls:
+                poll_count += 1
                 q = {"runId": rid}
                 if last_id: q["_id"] = {"$gt": last_id}
                 cursor = db().researchMessages.find(q).sort("_id", 1)
                 async for m in cursor:
                     last_id = m["_id"]; yield f"data: {json.dumps(_ser(m))}\n\n"
+                # Check if run is done
+                run = await db().runs.find_one({"_id": rid})
+                if run and run.get("status") in ["done", "failed"]:
+                    yield f"data: {json.dumps({'done': True, 'status': run.get('status')})}\n\n"
+                    break
                 yield ": keep-alive\n\n"
                 await asyncio.sleep(1.0)
     headers = {"Cache-Control":"no-cache","Connection":"keep-alive"}
@@ -425,13 +458,21 @@ async def live_stream(run_id: str):
                     yield f"data: {json.dumps(_ser_live(ch['fullDocument']))}\n\n"
         except Exception:
             last_iso = cur["ts"].isoformat() if cur and "ts" in cur else None
-            while True:
+            poll_count = 0
+            max_polls = 600  # Exit after ~10 minutes of polling
+            while poll_count < max_polls:
+                poll_count += 1
                 doc = await db().liveStatus.find_one({"runId": rid})
                 if doc and (not last_iso or doc["ts"].isoformat() != last_iso):
                     last_iso = doc["ts"].isoformat()
                     yield f"data: {json.dumps(_ser_live(doc))}\n\n"
                 else:
                     yield ": keep-alive\n\n"
+                # Check if run is done
+                run = await db().runs.find_one({"_id": rid})
+                if run and run.get("status") in ["done", "failed"]:
+                    yield f"data: {json.dumps({'done': True, 'status': run.get('status')})}\n\n"
+                    break
                 await asyncio.sleep(1.0)
 
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
@@ -621,6 +662,7 @@ async def stream_agent_events(run_id: str):
         while True:
             new_events = await db().agentEvents.find({
                 "runId": rid,
+                
                 "timestamp": {"$gt": last_seen}
             }).sort("timestamp", 1).to_list(length=10)
             

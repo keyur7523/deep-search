@@ -252,13 +252,26 @@ Create {n} sections for academic research. Each brief should specify:
         
     except Exception as e:
         print(f"LLM Error in plan_outline: {str(e)}")
+        import traceback
+        traceback.print_exc()
         print(f"Using fallback outline generation")
+
+        # Generate meaningful fallback headings based on common research patterns
+        fallback_patterns = [
+            ("Foundations and Key Concepts", "Examine the foundational concepts, definitions, and theoretical frameworks underlying"),
+            ("Current State and Applications", "Analyze the current state of practice, real-world applications, and implementation approaches for"),
+            ("Challenges and Ethical Considerations", "Investigate the key challenges, ethical implications, and potential risks associated with"),
+            ("Best Practices and Guidelines", "Identify established best practices, guidelines, and standards for responsible implementation of"),
+            ("Future Directions and Innovations", "Explore emerging trends, future directions, and innovative approaches in"),
+            ("Case Studies and Evidence", "Review empirical evidence, case studies, and documented outcomes related to"),
+        ]
+
         return [
             {
-                "idx": i+1, 
-                "heading": f"{topic}: Aspect {i+1}", 
-                "brief": f"Investigate the {['molecular mechanisms and structure', 'physiological functions and regulation', 'clinical significance and measurements', 'pathological variants and diseases', 'therapeutic interventions and treatments', 'recent research and emerging findings'][i % 6]} of {topic}, including specific biochemical pathways, quantitative data from peer-reviewed studies, and clinical implications."
-            } 
+                "idx": i+1,
+                "heading": fallback_patterns[i % len(fallback_patterns)][0],
+                "brief": f"{fallback_patterns[i % len(fallback_patterns)][1]} {topic}. Include specific examples, quantitative data from peer-reviewed studies, and practical implications for stakeholders."
+            }
             for i in range(n)
         ]
 

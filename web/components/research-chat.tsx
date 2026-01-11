@@ -34,6 +34,28 @@ interface ResearchChatProps {
   onStartNewChat?: () => void
 }
 
+interface ResearchMessage {
+  _id: string
+  role: 'user' | 'assistant'
+  kind: 'status' | 'query' | 'fetch' | 'reflect' | 'draft' | 'section' | 'complete' | 'error' | 'info' | 'thinking' | 'action' | 'result'
+  text: string
+  t: string
+  meta?: {
+    section?: number
+    sources?: number
+    academic?: number
+    web?: number
+    quality?: number
+    citations?: number
+    query?: string
+    url?: string
+    score?: number
+    decision?: string
+    round?: number
+    idx?: number
+  }
+}
+
 const MODEL_TO_PROVIDER: Record<string, string> = {
   "Academic + Web": "hybrid",
   "Academic Only (SerpAPI)": "serpapi",
@@ -48,7 +70,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const regularMsgs = useRunMessages(API_BASE, runId)
-  const [agentEvents, setAgentEvents] = useState<any[]>([])
+  const [agentEvents, setAgentEvents] = useState<ResearchMessage[]>([])
   const [reportContent, setReportContent] = useState<string>("")
   const [isExportingPDF, setIsExportingPDF] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -64,27 +86,28 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   // Subscribe to agent events for agentic runs
   useEffect(() => {
     if (!runId) return
-    
+
     const unsubscribe = subscribeToAgentEvents(
       runId,
       (event) => {
-        setAgentEvents(prev => [...prev, {
+        const newMessage: ResearchMessage = {
           _id: `${Date.now()}-${Math.random()}`,
           role: 'assistant',
-          kind: event.kind,
+          kind: event.kind as ResearchMessage['kind'],
           text: event.text,
           t: new Date().toISOString(),
           meta: event.meta
-        }])
+        }
+        setAgentEvents(prev => [...prev, newMessage])
       },
       () => {
         // Agent events stream completed
       },
-      (error) => {
+      () => {
         // Silently handle agent event errors
       }
     )
-    
+
     return unsubscribe
   }, [runId])
 
@@ -191,16 +214,23 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
     if (!runId) return
     
     try {
+      console.log('📡 Fetching report from:', `${API_BASE}/runs/${runId}/report`)
       const response = await fetch(`${API_BASE}/runs/${runId}/report`)
+      
+      console.log('📡 Report response status:', response.status)
       
       if (response.ok) {
         const data = await response.json()
+        console.log('📡 Report data received:', data.markdown ? `${data.markdown.length} chars` : 'no markdown')
         if (data.markdown) {
           setReportContent(data.markdown)
+          console.log('✅ Report content set!')
         }
+      } else {
+        console.log('❌ Report not ready, status:', response.status)
       }
     } catch (error) {
-      // Silently fail - report not ready yet
+      console.log('❌ Report fetch error:', error)
     }
   }
 
@@ -436,11 +466,25 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
 
   // Check if research is far enough along to show report panel
   const paragraphCount = msgs.filter(m => m.kind === 'result' && m.text.includes('Created paragraph')).length
+  const lastMsg = msgs[msgs.length - 1]
   const agentsFinished = msgs.length > 0 && (
     paragraphCount >= 3 || // If we have 3+ paragraphs, start trying to fetch report
     paragraphCount >= sections || // Or if we have all requested sections
-    msgs[msgs.length - 1]?.text?.toLowerCase().includes('all tasks complete')
+    lastMsg?.text?.toLowerCase().includes('all tasks complete') ||
+    lastMsg?.text?.toLowerCase().includes('done') || // Backend sends "done"
+    lastMsg?.kind === 'complete' // Backend sends kind: 'complete'
   )
+  
+  // Debug logging
+  if (msgs.length > 0 && lastMsg) {
+    console.log('🔍 Completion check:', {
+      paragraphCount,
+      sections,
+      lastMsgText: lastMsg.text,
+      lastMsgKind: lastMsg.kind,
+      agentsFinished
+    })
+  }
   
   const isComplete = agentsFinished || !!reportContent
   const isTopicValid = topic.trim().length >= MIN_TOPIC_LENGTH
@@ -448,23 +492,39 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
     ? `Topic must be at least ${MIN_TOPIC_LENGTH} characters` 
     : null
 
-  // Fetch report when research is complete 
+  // Fetch report when research is complete
   useEffect(() => {
     if (!runId) return
     if (!isComplete) return // Wait for agents to finish
     if (reportContent) return // Already have report
-    
+
+    let isCancelled = false
+
     // Start polling immediately when agents finish
     fetchReport()
-    
-    // Then poll every 3 seconds
-    const interval = setInterval(() => {
-      if (!reportContent) {
-        fetchReport()
+
+    // Then poll every 3 seconds until we get the report
+    const interval = setInterval(async () => {
+      if (isCancelled) return
+
+      try {
+        const response = await fetch(`${API_BASE}/runs/${runId}/report`)
+        if (response.ok) {
+          const data = await response.json()
+          if (data.markdown && !isCancelled) {
+            setReportContent(data.markdown)
+            clearInterval(interval) // Stop polling once we have content
+          }
+        }
+      } catch (error) {
+        // Silently continue polling on error
       }
     }, 3000)
-    
-    return () => clearInterval(interval)
+
+    return () => {
+      isCancelled = true
+      clearInterval(interval)
+    }
   }, [runId, isComplete, reportContent])
 
   if (!runId) {
@@ -641,7 +701,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
         </button>
       )}
       
-      <div className="flex flex-col flex-1">
+      <div className="flex flex-col flex-1 overflow-hidden">
         <div className="p-4 border-b border-border bg-muted/30">
           <div className="flex items-center justify-between">
             <div>
@@ -675,19 +735,21 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
         </div>
 
         {isComplete ? (
-          <div className="flex flex-1 overflow-hidden">
-            <div className="flex-1 flex flex-col min-h-0">
+          <div className="flex flex-1 min-h-0 h-[calc(100vh-140px)] overflow-hidden">
+            {/* Research Report - Left Panel with independent scroll */}
+            <div className="flex-1 flex flex-col min-h-0 h-full overflow-hidden">
               <div className="p-4 border-b border-border flex-shrink-0">
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4" />
                   <span className="text-sm font-medium">Research Report</span>
                 </div>
               </div>
-              <div className="flex-1 overflow-auto">
+              <div className="flex-1 overflow-y-auto">
                 <div className="p-4 md:p-6">
                   {reportContent ? (
                     <div className="prose prose-sm max-w-none markdown-content">
                       <ReactMarkdown
+                        skipHtml={true}
                         components={{
                           h1: ({children}) => <h1 className="text-2xl font-bold mb-4 text-foreground">{children}</h1>,
                           h2: ({children}) => <h2 className="text-xl font-semibold mb-3 mt-6 text-foreground">{children}</h2>,
@@ -700,6 +762,17 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
                           li: ({children}) => <li className="text-foreground">{children}</li>,
                           blockquote: ({children}) => <blockquote className="border-l-4 border-primary pl-4 italic text-muted-foreground my-4">{children}</blockquote>,
                           code: ({children}) => <code className="bg-muted px-1 py-0.5 rounded text-sm font-mono">{children}</code>,
+                          // Security: Render links safely with rel="noopener noreferrer"
+                          a: ({href, children}) => (
+                            <a
+                              href={href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary hover:underline"
+                            >
+                              {children}
+                            </a>
+                          ),
                         }}
                       >
                         {reportContent}
@@ -729,14 +802,15 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
               </div>
             </div>
 
-            <div className="w-80 border-l border-border flex flex-col min-h-0 hidden lg:flex">
+            {/* Research Logs - Right Panel with independent scroll */}
+            <div className="w-80 border-l border-border flex flex-col min-h-0 hidden lg:flex h-full overflow-hidden">
               <div className="p-4 border-b border-border flex-shrink-0">
                 <div className="flex items-center gap-2">
                   <Clock className="w-4 h-4" />
                   <span className="text-sm font-medium">Research Logs</span>
                 </div>
               </div>
-              <div className="flex-1 overflow-auto">
+              <div className="flex-1 overflow-y-auto">
                 <div className="p-2 space-y-2">
                   {msgs.map((message, idx) => (
                     <div key={message._id || idx} className="p-2 rounded border bg-background">

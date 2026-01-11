@@ -1,8 +1,12 @@
 from typing import Dict, Any, List
 from .base import BaseAgent
 from services.llm import call_llm
+from services.text_processing import correct_spelling, remove_duplicate_headings
 from bson import ObjectId
 from models.db import db
+import logging
+
+logger = logging.getLogger(__name__)
 
 class SynthesisAgent(BaseAgent):
     """
@@ -84,14 +88,26 @@ class SynthesisAgent(BaseAgent):
     
     async def _load_sources_with_content(self, source_ids: List[str]) -> List[Dict]:
         """Load sources with full text content"""
+        logger.info(f"Loading {len(source_ids)} sources for synthesis")
         sources = []
         for source_id in source_ids:
             try:
                 source = await db().sources.find_one({"_id": ObjectId(source_id)})
-                if source and source.get("text"):
-                    sources.append(source)
-            except:
+                if source:
+                    # Use text if available, otherwise fall back to snippet (abstract)
+                    text = source.get("text") or source.get("snippet", "")
+                    logger.info(f"Source {source_id}: text={len(source.get('text', '') or '')} chars, snippet={len(source.get('snippet', '') or '')} chars")
+                    if text:
+                        source["text"] = text  # Ensure text field is set
+                        sources.append(source)
+                    else:
+                        logger.warning(f"Source {source_id} has no text or snippet")
+                else:
+                    logger.warning(f"Source {source_id} not found in database")
+            except Exception as e:
+                logger.error(f"Error loading source {source_id}: {e}")
                 continue
+        logger.info(f"Loaded {len(sources)} sources with content")
         return sources
     
     async def _generate_synthesis(
@@ -148,7 +164,15 @@ class SynthesisAgent(BaseAgent):
                     "type": source.get("type", "web")
                 }
         
+        # Apply spell correction to synthesized text
+        corrected_response = correct_spelling(response)
+
+        # Remove any duplicate headings that may have been generated
+        corrected_response = remove_duplicate_headings(corrected_response)
+
+        logger.info(f"Synthesis text processed: {len(response)} -> {len(corrected_response)} chars")
+
         return {
-            "text": response,
+            "text": corrected_response,
             "citations": citations
         }

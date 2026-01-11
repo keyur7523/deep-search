@@ -97,7 +97,8 @@ class SearchAgent(BaseAgent):
                 {
                     "source_ids": source_ids,
                     "query": query,
-                    "expected_count": max_results
+                    "expected_count": max_results,
+                    "is_retry": payload.get("is_retry", False)
                 }
             )
 
@@ -119,21 +120,31 @@ class SearchAgent(BaseAgent):
 
     
     async def _search_hybrid(self, query: str, max_results: int) -> List[Dict]:
-        """Search using Semantic Scholar (free)"""
-        from services.academic import semantic_scholar_search
+        """Search using Semantic Scholar with arXiv fallback"""
+        from services.academic import semantic_scholar_search, arxiv_search
         results = await semantic_scholar_search(query, top=max_results)
+        # If still no results, try arXiv directly
+        if not results:
+            logger.info(f"Hybrid search: trying arXiv directly for: {query[:50]}")
+            results = await arxiv_search(query, top=max_results)
         return results
 
     async def _search_academic_serpapi(self, query: str, max_results: int) -> List[Dict]:
-        """Search academic sources via Semantic Scholar (SerpAPI unavailable)"""
-        from services.academic import semantic_scholar_search
+        """Search academic sources via Semantic Scholar with arXiv fallback"""
+        from services.academic import semantic_scholar_search, arxiv_search
         results = await semantic_scholar_search(query, top=max_results)
+        if not results:
+            logger.info(f"SerpAPI search: trying arXiv directly for: {query[:50]}")
+            results = await arxiv_search(query, top=max_results)
         return results
 
     async def _search_academic_crossref(self, query: str, max_results: int) -> List[Dict]:
-        """Search using Semantic Scholar"""
-        from services.academic import semantic_scholar_search
+        """Search using Semantic Scholar with arXiv fallback"""
+        from services.academic import semantic_scholar_search, arxiv_search
         results = await semantic_scholar_search(query, top=max_results)
+        if not results:
+            logger.info(f"Crossref search: trying arXiv directly for: {query[:50]}")
+            results = await arxiv_search(query, top=max_results)
         return results
     
     async def _search_web(self, query: str, max_results: int) -> List[Dict]:
@@ -189,8 +200,9 @@ class SearchAgent(BaseAgent):
                 res = await db().sources.insert_one(source_doc)
                 source_ids.append(str(res.inserted_id))
     
+                title_display = source_doc['title'][:50] + "..." if len(source_doc['title']) > 50 else source_doc['title']
                 await self.action(
-                    f"Stored source: {source_doc['title'][:50]}",
+                    f"Stored source: {title_display}",
                     task_id,
                     run_id
                 )

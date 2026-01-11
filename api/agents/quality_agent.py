@@ -4,19 +4,22 @@ from services.llm import call_llm
 from bson import ObjectId
 from models.db import db
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 class QualityAgent(BaseAgent):
     """
     Evaluates research quality and decides if more work is needed.
     """
-    
+
     def __init__(self):
         super().__init__("Quality")
-    
+
     async def execute(
-        self, 
-        payload: Dict[str, Any], 
-        task_id: str, 
+        self,
+        payload: Dict[str, Any],
+        task_id: str,
         run_id: str
     ) -> Dict[str, Any]:
         """
@@ -25,38 +28,49 @@ class QualityAgent(BaseAgent):
         source_ids = payload.get("source_ids", [])
         query = payload.get("query", "")
         expected_count = payload.get("expected_count", 5)
-        
+        is_retry = payload.get("is_retry", False)
+
         await self.think(
             f"Evaluating {len(source_ids)} sources for query: {query}",
             task_id,
             run_id
         )
-        
+
         # Load sources
         sources = await self._load_sources(source_ids)
-        
+
         if len(sources) == 0:
+            if is_retry:
+                # Already retried, abort
+                await self.result(
+                    "No sources found after retry - skipping this query",
+                    task_id,
+                    run_id,
+                    meta={"decision": "abort"}
+                )
+                return {"decision": "abort", "reason": "no_sources_after_retry"}
+
+            # First attempt with no sources - retry with broader search
             await self.result(
-                "No sources found after retries - cannot synthesize",
+                "No sources found - retrying with broader search",
                 task_id,
                 run_id,
-                meta={"decision": "abort"}
+                meta={"decision": "retry"}
             )
-            return {"decision": "abort", "reason": "no_sources_after_retry"}
 
-            
-            # Create retry search task
+            # Create retry search task with different provider
             await self.create_child_task(
                 run_id,
                 task_id,
                 "SEARCH",
                 {
-                    "query": f"{query} (retry with broader terms)",
-                    "searchType": "hybrid",
-                    "maxResults": expected_count * 2
+                    "query": query,  # Keep same query
+                    "searchType": "hybrid",  # Try hybrid search
+                    "maxResults": expected_count * 2,
+                    "is_retry": True
                 }
             )
-            
+
             return {"decision": "retry", "reason": "no_sources"}
         
         # Evaluate quality using LLM
@@ -140,14 +154,41 @@ class QualityAgent(BaseAgent):
             }
         
         else:
-            # Poor quality - retry with different approach
+            # Poor quality - check if we already retried
+            if is_retry:
+                # Already retried once, proceed with what we have rather than loop forever
+                await self.result(
+                    "Quality still insufficient after retry - proceeding with available sources",
+                    task_id,
+                    run_id,
+                    meta={"decision": "proceed_anyway"}
+                )
+
+                await self.create_child_task(
+                    run_id,
+                    task_id,
+                    "SYNTHESIS",
+                    {
+                        "source_ids": source_ids,
+                        "query": query,
+                        "quality_score": quality_assessment['score']
+                    }
+                )
+
+                return {
+                    "decision": "proceed_anyway",
+                    "score": quality_assessment['score'],
+                    "reason": "retry_exhausted"
+                }
+
+            # First attempt - retry with different approach
             await self.result(
                 "Quality insufficient - retrying with different search strategy",
                 task_id,
                 run_id,
                 meta={"decision": "retry"}
             )
-            
+
             await self.create_child_task(
                 run_id,
                 task_id,
@@ -155,10 +196,11 @@ class QualityAgent(BaseAgent):
                 {
                     "query": quality_assessment.get('suggested_query', query),
                     "searchType": "hybrid",
-                    "maxResults": expected_count * 2
+                    "maxResults": expected_count * 2,
+                    "is_retry": True
                 }
             )
-            
+
             return {
                 "decision": "retry",
                 "score": quality_assessment['score'],

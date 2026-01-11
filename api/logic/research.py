@@ -10,6 +10,7 @@ from services.pdf_processor import process_academic_pdf
 from services.vision import analyze_source_visuals
 from services.agents import generate_diagram, extract_chart_data, should_generate_visuals
 from services.messages import emit_msg
+from services.text_processing import clean_report_text, correct_query
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -290,6 +291,11 @@ async def start_run_task(run_id: str):
         
         md = md.rstrip() + "\n\n## References\n" + "\n".join(lines)
         logger.info(f"Added references section with {len(lines)} citations")
+
+    # Apply text cleaning: spell-check and remove duplicate headings
+    original_length = len(md)
+    md = clean_report_text(md)
+    logger.info(f"Text cleaning applied: {original_length} -> {len(md)} chars")
 
     # Final validation
     if not md or len(md) < 500:
@@ -785,7 +791,7 @@ async def get_outline(run_id: str, user_sub: str):
 
 async def get_report(run_id: str, user_sub: str):
     rid = ObjectId(run_id)
-    
+
     # First check if report is stored in runs collection (agentic runs)
     run = await db().runs.find_one({"_id": rid})
     if run and run.get("report"):
@@ -793,18 +799,22 @@ async def get_report(run_id: str, user_sub: str):
             "markdown": run.get("report", ""),
             "citations": run.get("citations", {})
         }
-    
+
     # Then check reports collection (simple runs)
     rep = await db().reports.find_one({"runId": rid}) \
        or await db().reports.find_one({"RunId": rid})
-    if rep: 
+    if rep:
         return {"markdown": rep.get("markdown","")}
-    
-    # Fallback: stitch paragraphs together
-    paras = [p async for p in db().paragraphs.find({"runId": rid}).sort("idx", 1)]
-    if paras:
-        md = "\n\n".join(p.get("draftMd","") for p in paras)
-        return {"markdown": md}
+
+    # Fallback: stitch paragraphs together ONLY if run is complete
+    # This prevents returning partial content during synthesis
+    if run and run.get("status") == "done":
+        paras = [p async for p in db().paragraphs.find({"runId": rid}).sort("idx", 1)]
+        if paras:
+            md = "\n\n".join(p.get("draftMd","") for p in paras)
+            return {"markdown": md}
+
+    # Return None if report not ready yet (run still in progress)
     return None
 
 async def get_research_threads(user_sub: str, limit: int = 20):

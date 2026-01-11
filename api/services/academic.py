@@ -39,7 +39,8 @@ async def semantic_scholar_search(query: str, top: int = 10) -> List[Dict]:
     Search Semantic Scholar for peer-reviewed papers
     Free API, high-quality academic sources with citations
     """
-    await asyncio.sleep(1)
+    # Rate limit: wait 3 seconds between requests to avoid 429 errors
+    await asyncio.sleep(3)
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": query,
@@ -47,24 +48,37 @@ async def semantic_scholar_search(query: str, top: int = 10) -> List[Dict]:
         "fields": "title,authors,year,abstract,citationCount,venue,openAccessPdf,url,externalIds,publicationTypes,fieldsOfStudy"
     }
     headers = {"User-Agent": "DeepResearch/1.0"}
-    
+
     # Add API key if available (for higher rate limits)
     api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
     if api_key:
         headers["x-api-key"] = api_key
         logger.info("Using Semantic Scholar API key")
-    
+
     try:
-        async with httpx.AsyncClient(timeout=15) as cx:
+        async with httpx.AsyncClient(timeout=30) as cx:
+            logger.info(f"Semantic Scholar searching: {query[:60]}...")
             r = await cx.get(url, params=params, headers=headers)
-            r.raise_for_status()
+
+            # Handle rate limiting
+            if r.status_code == 429:
+                logger.warning(f"Semantic Scholar rate limited (429). Waiting and retrying...")
+                await asyncio.sleep(10)
+                r = await cx.get(url, params=params, headers=headers)
+
+            if r.status_code != 200:
+                logger.error(f"Semantic Scholar HTTP {r.status_code}: {r.text[:200]}")
+                # Fallback to arXiv on error
+                logger.info("Falling back to arXiv search...")
+                return await arxiv_search(query, top)
+
             data = r.json()
-        
+
         results = []
         for paper in data.get("data", [])[:top]:
             authors = [a.get("name", "") for a in paper.get("authors", [])[:3]]
             author_text = ", ".join(authors) + (" et al." if len(paper.get("authors", [])) > 3 else "")
-            
+
             results.append({
                 "title": paper.get("title", ""),
                 "url": paper.get("url", ""),
@@ -82,13 +96,24 @@ async def semantic_scholar_search(query: str, top: int = 10) -> List[Dict]:
                 "publication_types": paper.get("publicationTypes", []),
                 "fields": paper.get("fieldsOfStudy", [])
             })
-        
+
         logger.info(f"Semantic Scholar found {len(results)} papers for: {query[:50]}")
+
+        # If no results, try arXiv as fallback
+        if not results:
+            logger.info(f"No Semantic Scholar results, trying arXiv fallback...")
+            return await arxiv_search(query, top)
+
         return results
-    
+
+    except httpx.TimeoutException:
+        logger.error(f"Semantic Scholar timeout for: {query[:50]}")
+        logger.info("Falling back to arXiv search...")
+        return await arxiv_search(query, top)
     except Exception as e:
         logger.error(f"Semantic Scholar error: {e}")
-        return []
+        logger.info("Falling back to arXiv search...")
+        return await arxiv_search(query, top)
 
 
 # === PubMed API (Free, no key required) ===
@@ -171,7 +196,7 @@ async def arxiv_search(query: str, top: int = 10) -> List[Dict]:
     Search arXiv for preprints (physics, math, CS, etc.)
     Best for cutting-edge research
     """
-    url = "http://export.arxiv.org/api/query"
+    url = "https://export.arxiv.org/api/query"
     params = {
         "search_query": f"all:{query}",
         "start": 0,

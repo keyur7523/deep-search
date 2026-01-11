@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react" 
+import { useState, useEffect, useMemo } from "react"
 import { ResearchChat } from "@/components/research-chat"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { 
@@ -48,11 +48,15 @@ export default function AppPage() {
     loadRuns()
   }, [])
 
+  // Memoize active runs count to avoid recalculating on every render
+  const activeRunsCount = useMemo(() => {
+    return runs.filter(r => r.status === 'running' || r.status === 'queued' || r.status === 'planning').length
+  }, [runs])
+
   // Update run statuses periodically - only for active runs
   useEffect(() => {
-    const activeRuns = runs.filter(r => r.status === 'running' || r.status === 'queued' || r.status === 'planning')
-    if (activeRuns.length === 0) return
-    
+    if (activeRunsCount === 0) return
+
     const updateRunStatuses = async () => {
       try {
         const recentRuns = await getRecentRuns(20)
@@ -65,12 +69,12 @@ export default function AppPage() {
         }))
         // Sort by createdAt in descending order (newest first)
         updatedRuns.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-        
+
         // Only update if we have runs, and preserve the order
         setRuns(prevRuns => {
           // If we have no previous runs, use the updated runs
           if (prevRuns.length === 0) return updatedRuns
-          
+
           // Otherwise, merge and maintain newest-first order
           const mergedRuns = [...updatedRuns]
           // Add any runs from prevRuns that aren't in updatedRuns (in case of new runs)
@@ -90,7 +94,7 @@ export default function AppPage() {
 
     const interval = setInterval(updateRunStatuses, 5000)
     return () => clearInterval(interval)
-  }, [runs.filter(r => r.status === 'running' || r.status === 'queued' || r.status === 'planning').length])
+  }, [activeRunsCount])
 
   const handleStartNewChat = () => {
     setCurrentRunId(null)

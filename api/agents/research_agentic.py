@@ -7,6 +7,7 @@ from .search_agent import SearchAgent
 from .quality_agent import QualityAgent
 from .synthesis_agent import SynthesisAgent
 from models.db import db, create_agent_task
+from services.text_processing import clean_report_text
 from bson import ObjectId
 import logging
 
@@ -71,12 +72,16 @@ async def start_agentic_run(run_id: str):
 
 async def _compile_final_report(run_id: str):
     """Compile all paragraphs into final report"""
-    
+
     # Get all paragraphs for this run
     paragraphs = await db().paragraphs.find({
         "runId": ObjectId(run_id)
     }).sort("query", 1).to_list(length=None)
-    
+
+    logger.info(f"Found {len(paragraphs)} paragraphs for run {run_id}")
+    for i, para in enumerate(paragraphs):
+        logger.info(f"  Paragraph {i+1}: query='{para.get('query', '')[:50]}', chars={len(para.get('draftMd', ''))}")
+
     if not paragraphs:
         logger.warning(f"No paragraphs found for run {run_id}")
         return
@@ -108,13 +113,18 @@ async def _compile_final_report(run_id: str):
     
     # Build final markdown
     final_report = "\n\n".join(report_parts)
-    
+
     # Add references section
     if all_citations:
         final_report += "\n\n## References\n\n"
         for num, citation in sorted(all_citations.items(), key=lambda x: int(x[0])):
             final_report += f"{num}. {citation.get('title', 'Unknown')} - {citation.get('url', '')}\n"
-    
+
+    # Apply text cleaning: spell-check and remove duplicate headings
+    original_length = len(final_report)
+    final_report = clean_report_text(final_report)
+    logger.info(f"Text cleaning applied: {original_length} -> {len(final_report)} chars")
+
     # Store report
     await db().runs.update_one(
         {"_id": ObjectId(run_id)},

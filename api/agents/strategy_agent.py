@@ -1,9 +1,13 @@
 from typing import Dict, Any
 from .base import BaseAgent
 from services.llm import call_llm
+from services.text_processing import correct_query
 from bson import ObjectId
 from models.db import db
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 class StrategyAgent(BaseAgent):
     """
@@ -54,7 +58,7 @@ class StrategyAgent(BaseAgent):
         )
         
         # Parse strategy
-        strategy = self._parse_strategy(response)
+        strategy = self._parse_strategy(response, topic)
         
         await self.result(
             f"Created strategy with {len(strategy['search_queries'])} search queries",
@@ -64,6 +68,7 @@ class StrategyAgent(BaseAgent):
         )
         
         # Create search tasks
+        search_type = config.get("searchProvider", "hybrid")
         for idx, query in enumerate(strategy['search_queries']):
             await self.create_child_task(
                 run_id,
@@ -72,8 +77,7 @@ class StrategyAgent(BaseAgent):
                 {
                     "query": query,
                     "index": idx,
-                    "searchType": "academic_crossref"
-                    #"searchType": config.get("searchProvider", "hybrid")
+                    "searchType": search_type
                 }
             )
         
@@ -111,7 +115,7 @@ Provide 3-5 diverse search queries that will comprehensively cover the topic.
 Make queries specific and varied (mix of broad and narrow angles).
 """
     
-    def _parse_strategy(self, response: str) -> Dict[str, Any]:
+    def _parse_strategy(self, response: str, topic: str = "") -> Dict[str, Any]:
         """Parse LLM response into strategy dict"""
         try:
             # Try to extract JSON from response
@@ -119,15 +123,36 @@ Make queries specific and varied (mix of broad and narrow angles).
             end = response.rfind('}') + 1
             if start >= 0 and end > start:
                 json_str = response[start:end]
-                return json.loads(json_str)
+                parsed = json.loads(json_str)
+                # Ensure we have at least 3 queries
+                if len(parsed.get("search_queries", [])) >= 2:
+                    # Apply spell correction to search queries
+                    parsed["search_queries"] = self._correct_queries(parsed["search_queries"])
+                    return parsed
         except:
             pass
-        
-        # Fallback: create basic strategy
+
+        # Fallback: create multiple queries from topic
+        # Generate diverse queries to ensure multiple paragraphs
+        base_topic = topic or "research topic"
+        queries = [
+            f"{base_topic} overview introduction",
+            f"{base_topic} recent developments advances",
+            f"{base_topic} applications practical uses",
+            f"{base_topic} challenges limitations future",
+        ]
         return {
             "approach": "Multi-angle research approach",
-            "search_queries": [
-                response[:100] if response else "general research query"
-            ],
-            "key_aspects": []
+            "search_queries": self._correct_queries(queries),
+            "key_aspects": ["overview", "developments", "applications", "challenges"]
         }
+
+    def _correct_queries(self, queries: list) -> list:
+        """Apply spell correction to a list of search queries"""
+        corrected_queries = []
+        for query in queries:
+            corrected, corrections = correct_query(query)
+            if corrections:
+                logger.info(f"Query spell corrections: {corrections}")
+            corrected_queries.append(corrected)
+        return corrected_queries

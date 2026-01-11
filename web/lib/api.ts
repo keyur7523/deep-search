@@ -1,13 +1,11 @@
 import { API_BASE } from './config'
-import { 
-  APIError, 
-  validateTopic, 
-  validateResearchParams, 
+import {
+  APIError,
+  validateTopic,
   retryWithBackoff,
-  logError 
+  logError
 } from './errorUtils'
 import type {
-  StartRunRequest,
   CreateProjectResponse,
   StartRunResponse,
   GetRunsResponse,
@@ -83,8 +81,6 @@ export async function createProject(
     )
 
     const data = await response.json()
-    console.log('CREATE PROJECT RESPONSE:', data)  // ADD THIS
-    console.log('PROJECT ID:', data.project_id)     // ADD THIS
     return data
   } catch (error) {
     logError('createProject', error, { topic, maxParagraphs })
@@ -120,8 +116,6 @@ export async function startRun(
     )
 
     const data = await response.json()
-    console.log('🔍 START RUN RESPONSE:', data)  // ADD THIS
-    console.log('🔍 RUN ID:', data.run_id)       // ADD THIS
     return data
   } catch (error) {
     logError('startRun', error, { projectId, rounds, searchProvider })
