@@ -1,10 +1,13 @@
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { Sparkles } from "lucide-react"
+import { PageTransition } from "@/components/ui/animations"
 
 export default function HomePage() {
   return (
-    <div className="min-h-screen flex flex-col">
+    <PageTransition className="min-h-screen">
+      <div className="min-h-screen flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-50 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="w-full flex h-16 items-center justify-between px-4 md:px-6">
@@ -18,17 +21,20 @@ export default function HomePage() {
             <span className="font-semibold text-lg text-foreground">Deep Research</span>
           </Link>
 
-          <nav className="hidden md:flex items-center gap-6 mr-4 md:mr-6">
-            <Link href="/docs" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Docs
-            </Link>
-            <Link href="/changelog" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Changelog
-            </Link>
-            <Link href="/contact" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Contact
-            </Link>
-          </nav>
+          <div className="flex items-center gap-3">
+            <nav className="hidden md:flex items-center gap-6 mr-2">
+              <Link href="/docs" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+                Docs
+              </Link>
+              <Link href="/changelog" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+                Changelog
+              </Link>
+              <Link href="/contact" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+                Contact
+              </Link>
+            </nav>
+            <ThemeToggle variant="ghost" size="icon" />
+          </div>
         </div>
       </header>
 
@@ -79,6 +85,7 @@ export default function HomePage() {
           </div>
         </div>
       </footer>
-    </div>
+      </div>
+    </PageTransition>
   )
 }
