@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -21,11 +21,16 @@ import {
   X
 } from "lucide-react"
 import { useRunMessages } from "@/hooks/useRunMessages"
+import { useAgentEventStream } from "@/hooks/useAgentEventStream"
 import { API_BASE } from "@/lib/config"
-import { createProject, createRunV2, subscribeToAgentEvents } from "@/lib/api"
+import { createProject, createRunV2 } from "@/lib/api"
 import type { AgentMode } from "@/lib/types"
 import ReactMarkdown from "react-markdown"
 import jsPDF from "jspdf"
+import { AnimatePresence, SlideDown, FadeIn, motion } from "@/components/ui/animations"
+import { SkeletonReport } from "@/components/ui/skeletons"
+import { useResearchStore } from "@/stores"
+import { buildOutlineFromReport } from "@/lib/outline"
 
 interface ResearchChatProps {
   runId: string | null
@@ -69,9 +74,10 @@ const MIN_TOPIC_LENGTH = 10
 export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat }: ResearchChatProps) {
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const settingsRef = useRef<HTMLDivElement>(null)
+  const modelRef = useRef<HTMLDivElement>(null)
   const regularMsgs = useRunMessages(API_BASE, runId)
   const [agentEvents, setAgentEvents] = useState<ResearchMessage[]>([])
-  const [reportContent, setReportContent] = useState<string>("")
   const [isExportingPDF, setIsExportingPDF] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showModelDropdown, setShowModelDropdown] = useState(false)
@@ -82,34 +88,19 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [researchMode, setResearchMode] = useState<AgentMode>("auto")
+  const [liveMessage, setLiveMessage] = useState("")
+  const {
+    report,
+    setReport,
+    setOutline,
+    setCurrentRunId,
+    setStatus,
+    setProgress,
+    setError: setRunError,
+    reset,
+  } = useResearchStore()
 
-  // Subscribe to agent events for agentic runs
-  useEffect(() => {
-    if (!runId) return
-
-    const unsubscribe = subscribeToAgentEvents(
-      runId,
-      (event) => {
-        const newMessage: ResearchMessage = {
-          _id: `${Date.now()}-${Math.random()}`,
-          role: 'assistant',
-          kind: event.kind as ResearchMessage['kind'],
-          text: event.text,
-          t: new Date().toISOString(),
-          meta: event.meta
-        }
-        setAgentEvents(prev => [...prev, newMessage])
-      },
-      () => {
-        // Agent events stream completed
-      },
-      () => {
-        // Silently handle agent event errors
-      }
-    )
-
-    return unsubscribe
-  }, [runId])
+  useAgentEventStream(runId)
 
   // Combine regular messages and agent events
   const msgs = regularMsgs.length > 0 ? regularMsgs : agentEvents
@@ -118,6 +109,47 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [msgs])
+
+  // Enhanced aria-live announcements for accessibility
+  useEffect(() => {
+    const latest = msgs[msgs.length - 1]
+    if (!latest?.text) return
+    const label = latest.kind === 'error' ? 'Error' : 'Update'
+    setLiveMessage(`${label}: ${latest.text}`)
+  }, [msgs])
+
+  // Announce progress changes
+  const { progress, status } = useResearchStore()
+  const prevProgressRef = React.useRef(progress)
+  const prevStatusRef = React.useRef(status)
+
+  useEffect(() => {
+    // Announce significant progress changes (every 25%)
+    if (progress !== prevProgressRef.current) {
+      const prevMilestone = Math.floor(prevProgressRef.current / 25)
+      const currentMilestone = Math.floor(progress / 25)
+      if (currentMilestone > prevMilestone && progress > 0) {
+        setLiveMessage(`Research ${progress}% complete`)
+      }
+      prevProgressRef.current = progress
+    }
+  }, [progress])
+
+  useEffect(() => {
+    // Announce status transitions
+    if (status !== prevStatusRef.current) {
+      const statusMessages: Record<string, string> = {
+        'researching': 'Research started',
+        'writing': 'Writing report',
+        'completed': 'Research completed successfully',
+        'error': 'An error occurred during research',
+      }
+      if (statusMessages[status]) {
+        setLiveMessage(statusMessages[status])
+      }
+      prevStatusRef.current = status
+    }
+  }, [status])
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -133,8 +165,66 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   }, [])
 
   useEffect(() => {
+    if (!showSettings) return
+    const container = settingsRef.current
+    if (!container) return
+    const focusable = container.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    first?.focus()
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || focusable.length === 0) return
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last?.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first?.focus()
+      }
+    }
+    container.addEventListener('keydown', onKeyDown)
+    return () => container.removeEventListener('keydown', onKeyDown)
+  }, [showSettings])
+
+  useEffect(() => {
+    if (!showModelDropdown) return
+    const container = modelRef.current
+    if (!container) return
+    const focusable = container.querySelectorAll<HTMLElement>(
+      'button, [href], [tabindex]:not([tabindex="-1"])'
+    )
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    first?.focus()
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || focusable.length === 0) return
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last?.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first?.focus()
+      }
+    }
+    container.addEventListener('keydown', onKeyDown)
+    return () => container.removeEventListener('keydown', onKeyDown)
+  }, [showModelDropdown])
+
+  useEffect(() => {
     // Always clear state when runId changes (including when it becomes null)
-    setReportContent("")
+    if (!runId) {
+      reset()
+      setAgentEvents([])
+      return
+    }
+    setCurrentRunId(runId)
+    setStatus('researching')
+    setProgress(0)
+    setReport("")
     setAgentEvents([])
   }, [runId])
 
@@ -205,6 +295,8 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
     } catch (error) {
       console.error('Error starting research:', error)
       setError(error instanceof Error ? error.message : 'Failed to start research. Please try again.')
+      setRunError(error instanceof Error ? error.message : 'Failed to start research. Please try again.')
+      setStatus('error')
     } finally {
       setIsCreating(false)
     }
@@ -223,7 +315,8 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
         const data = await response.json()
         console.log('📡 Report data received:', data.markdown ? `${data.markdown.length} chars` : 'no markdown')
         if (data.markdown) {
-          setReportContent(data.markdown)
+          setReport(data.markdown)
+          setOutline(buildOutlineFromReport(data.markdown))
           console.log('✅ Report content set!')
         }
       } else {
@@ -235,7 +328,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   }
 
   const exportToPDF = async () => {
-    if (!reportContent) {
+    if (!report) {
       alert('No report content available to export.')
       return
     }
@@ -269,7 +362,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
       pdf.setFontSize(fontSize)
       pdf.setTextColor(0, 0, 0)
       
-      const lines = reportContent.split('\n')
+      const lines = report.split('\n')
       
       for (const line of lines) {
         if (line.trim() === '') {
@@ -486,17 +579,32 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
     })
   }
   
-  const isComplete = agentsFinished || !!reportContent
+  const isComplete = agentsFinished || !!report
   const isTopicValid = topic.trim().length >= MIN_TOPIC_LENGTH
   const topicError = topic.length > 0 && !isTopicValid 
     ? `Topic must be at least ${MIN_TOPIC_LENGTH} characters` 
     : null
 
+  useEffect(() => {
+    if (!isComplete && sections > 0) {
+      const computed = Math.min(90, Math.round((paragraphCount / sections) * 100))
+      setProgress(Number.isFinite(computed) ? computed : 0)
+      setStatus('researching')
+    }
+  }, [isComplete, paragraphCount, sections, setProgress, setStatus])
+
+  useEffect(() => {
+    if (isComplete) {
+      setStatus('completed')
+      setProgress(100)
+    }
+  }, [isComplete, setProgress, setStatus])
+
   // Fetch report when research is complete
   useEffect(() => {
     if (!runId) return
     if (!isComplete) return // Wait for agents to finish
-    if (reportContent) return // Already have report
+    if (report) return // Already have report
 
     let isCancelled = false
 
@@ -512,7 +620,8 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
         if (response.ok) {
           const data = await response.json()
           if (data.markdown && !isCancelled) {
-            setReportContent(data.markdown)
+            setReport(data.markdown)
+            setOutline(buildOutlineFromReport(data.markdown))
             clearInterval(interval) // Stop polling once we have content
           }
         }
@@ -525,7 +634,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
       isCancelled = true
       clearInterval(interval)
     }
-  }, [runId, isComplete, reportContent])
+  }, [runId, isComplete, report])
 
   if (!runId) {
     return (
@@ -556,39 +665,56 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
               />
             </div>
             
-            {(topicError || error) && (
-              <div id="topic-error" className="mt-2 text-sm text-red-600 text-left px-2">
-                {error || topicError}
-              </div>
-            )}
+            <AnimatePresence>
+              {(topicError || error) && (
+                <FadeIn>
+                  <div id="topic-error" className="mt-2 text-sm text-red-600 text-left px-2">
+                    {error || topicError}
+                  </div>
+                </FadeIn>
+              )}
+            </AnimatePresence>
             
             <div className="flex items-center justify-between mt-4 px-2 flex-wrap gap-2">
               <button
+                type="button"
                 onClick={() => setShowSettings(!showSettings)}
                 className="flex items-center gap-2 px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors bg-white/80 rounded-lg hover:bg-white border border-gray-200 shadow-sm"
                 aria-label="Toggle settings"
                 aria-expanded={showSettings}
+                aria-controls="research-settings-panel"
               >
                 <Settings className="w-4 h-4" />
                 <span className="text-sm font-medium">Settings</span>
               </button>
               
               <button
+                type="button"
                 onClick={() => setShowModelDropdown(!showModelDropdown)}
                 className="flex items-center gap-2 px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors bg-white/80 rounded-lg hover:bg-white border border-gray-200 shadow-sm"
                 aria-label="Select model"
                 aria-expanded={showModelDropdown}
+                aria-controls="model-select-panel"
               >
                 <span className="text-sm font-medium">{selectedModel}</span>
                 <ChevronDown className="w-4 h-4" />
               </button>
             </div>
             
-            {showSettings && (
-              <div className="absolute top-32 left-0 bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-64 z-[var(--z-dropdown,20)]">
+            <AnimatePresence>
+              {showSettings && (
+              <SlideDown
+                id="research-settings-panel"
+                ref={settingsRef}
+                role="dialog"
+                aria-modal="true"
+                aria-label="Research settings"
+                className="absolute top-32 left-0 bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-64 z-[var(--z-dropdown,20)]"
+              >
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold">Settings</h3>
                   <button
+                    type="button"
                     onClick={() => setShowSettings(false)}
                     className="text-gray-400 hover:text-gray-600"
                     aria-label="Close settings"
@@ -649,39 +775,50 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
                     </p>
                   </div>
                 </div>
-              </div>
-            )}
+              </SlideDown>
+              )}
+            </AnimatePresence>
             
-            {showModelDropdown && (
-              <div className="absolute top-32 right-0 bg-white border border-gray-200 rounded-xl shadow-xl p-2 w-56 z-[var(--z-dropdown,20)]">
-                <div className="space-y-1">
-                  {Object.keys(MODEL_TO_PROVIDER).map((model) => (
-                    <button
-                      key={model}
-                      onClick={() => {
-                        setSelectedModel(model)
-                        setShowModelDropdown(false)
-                      }}
-                      className={`w-full text-left px-3 py-2 text-sm rounded-lg transition-colors ${
-                        selectedModel === model ? 'bg-purple-50 text-purple-700' : 'hover:bg-gray-50'
-                      }`}
-                    >
-                      {model}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+            <AnimatePresence>
+              {showModelDropdown && (
+                <SlideDown
+                  id="model-select-panel"
+                  ref={modelRef}
+                  role="menu"
+                  aria-label="Model selection"
+                  className="absolute top-32 right-0 bg-white border border-gray-200 rounded-xl shadow-xl p-2 w-56 z-[var(--z-dropdown,20)]"
+                >
+                  <div className="space-y-1">
+                    {Object.keys(MODEL_TO_PROVIDER).map((model) => (
+                      <button
+                        key={model}
+                        onClick={() => {
+                          setSelectedModel(model)
+                          setShowModelDropdown(false)
+                        }}
+                        role="menuitem"
+                        className={`w-full text-left px-3 py-2 text-sm rounded-lg transition-colors ${
+                          selectedModel === model ? 'bg-purple-50 text-purple-700' : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        {model}
+                      </button>
+                    ))}
+                  </div>
+                </SlideDown>
+              )}
+            </AnimatePresence>
           </div>
           
-          <button 
+          <motion.button
             onClick={handleStartResearch}
             disabled={!isTopicValid || isCreating}
             className="w-75 h-12 md:h-16 px-8 md:px-12 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-small text-lg md:text-xl rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center mx-auto disabled:opacity-50 disabled:cursor-not-allowed"
             aria-label={isCreating ? 'Starting research' : 'Start research'}
+            whileTap={{ scale: 0.98 }}
           >
             {isCreating ? 'Starting...' : 'Start Research'}
-          </button>
+          </motion.button>
         </div>
       </div>
     )
@@ -689,16 +826,20 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
 
   return (
     <div className="flex-1 flex bg-background relative">
+      <div className="sr-only" role="status" aria-live="polite">
+        {liveMessage}
+      </div>
       {runId && onStartNewChat && (
-        <button
+        <motion.button
           onClick={onStartNewChat}
           className="fixed bottom-6 right-6 z-[var(--z-fab,40)] bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-200 flex items-center gap-2"
           aria-label="Start new research chat (Ctrl+N)"
           title="Start new research (Ctrl+N)"
+          whileTap={{ scale: 0.98 }}
         >
           <MessageSquarePlus className="w-5 h-5" />
           <span className="text-sm font-medium hidden md:inline">New Chat</span>
-        </button>
+        </motion.button>
       )}
       
       <div className="flex flex-col flex-1 overflow-hidden">
@@ -724,7 +865,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
                   size="sm" 
                   variant="outline" 
                   onClick={exportToPDF}
-                  disabled={isExportingPDF || !reportContent}
+                  disabled={isExportingPDF || !report}
                   aria-label="Download report as PDF"
                 >
                   {isExportingPDF ? 'Generating...' : 'Download PDF'}
@@ -746,7 +887,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
               </div>
               <div className="flex-1 overflow-y-auto">
                 <div className="p-4 md:p-6">
-                  {reportContent ? (
+                  {report ? (
                     <div className="prose prose-sm max-w-none markdown-content">
                       <ReactMarkdown
                         skipHtml={true}
@@ -775,27 +916,16 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
                           ),
                         }}
                       >
-                        {reportContent}
+                        {report}
                       </ReactMarkdown>
                     </div>
                   ) : (
-                    <div className="bg-muted/50 p-4 rounded-lg">
-                      <div className="flex items-center gap-3 mb-3">
-                        <div className="animate-pulse">
-                          <div className="flex gap-1">
-                            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                          </div>
-                        </div>
-                        <p className="text-sm font-medium text-foreground">Generating report...</p>
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+                        <span>Generating report... Compiling {paragraphCount} sections.</span>
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        Research complete. Compiling {paragraphCount} sections into final report.
-                      </p>
-                      <div className="mt-3 text-xs text-muted-foreground">
-                        This may take 10-30 seconds depending on report length.
-                      </div>
+                      <SkeletonReport />
                     </div>
                   )}
                 </div>
