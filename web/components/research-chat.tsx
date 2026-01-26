@@ -63,10 +63,10 @@ interface ResearchMessage {
 
 const MODEL_TO_PROVIDER: Record<string, string> = {
   "Academic + Web": "hybrid",
-  "Academic Only (SerpAPI)": "serpapi",
-  "Academic Only (CrossRef)": "crossref",
-  "Web Only": "brave",
-  "Brave Search": "brave"
+  "Academic Only": "academic",
+  "Semantic Scholar": "semantic_scholar",
+  "arXiv": "arxiv",
+  "Web Only": "web"
 }
 
 const MIN_TOPIC_LENGTH = 10
