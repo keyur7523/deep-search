@@ -8,8 +8,27 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 import asyncio
 
+from .retry import retry_http_request, RetryConfig, CircuitBreaker
+from .http_pool import http_pool, SEMANTIC_SCHOLAR_BASE
+from .cache import search_cache, cached
+
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# Retry configuration for academic APIs (they often have rate limits)
+ACADEMIC_API_RETRY_CONFIG = RetryConfig(
+    max_retries=3,
+    base_delay=2.0,  # Start with 2 second delay
+    max_delay=30.0,  # Cap at 30 seconds
+    exponential_base=2.0,
+    jitter=True,
+    retryable_status_codes={429, 500, 502, 503, 504}
+)
+
+# Circuit breakers for each service (prevent hammering failing services)
+_semantic_scholar_breaker = CircuitBreaker(failure_threshold=5, recovery_time=60)
+_arxiv_breaker = CircuitBreaker(failure_threshold=5, recovery_time=60)
+_pubmed_breaker = CircuitBreaker(failure_threshold=5, recovery_time=60)
 
 def _safe_int(value: Any, default: int = 0, max_val: int = 2147483647) -> int:
     """Convert to safe MongoDB integer, capping at max value"""
@@ -38,9 +57,21 @@ async def semantic_scholar_search(query: str, top: int = 10) -> List[Dict]:
     """
     Search Semantic Scholar for peer-reviewed papers
     Free API, high-quality academic sources with citations
+
+    Uses exponential backoff for rate limiting instead of hardcoded delays.
+    Results are cached for 1 hour to reduce API calls.
     """
-    # Rate limit: wait 3 seconds between requests to avoid 429 errors
-    await asyncio.sleep(3)
+    # CACHE: Check for cached results first
+    cached_results = await search_cache.get_search_results(query, "semantic_scholar")
+    if cached_results:
+        logger.info(f"Cache hit for Semantic Scholar query: {query[:50]}...")
+        return cached_results[:top]
+
+    # Check circuit breaker before making request
+    if not _semantic_scholar_breaker.can_execute():
+        logger.warning("Semantic Scholar circuit breaker is OPEN, falling back to arXiv")
+        return await arxiv_search(query, top)
+
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     params = {
         "query": query,
@@ -56,23 +87,28 @@ async def semantic_scholar_search(query: str, top: int = 10) -> List[Dict]:
         logger.info("Using Semantic Scholar API key")
 
     try:
-        async with httpx.AsyncClient(timeout=30) as cx:
-            logger.info(f"Semantic Scholar searching: {query[:60]}...")
-            r = await cx.get(url, params=params, headers=headers)
+        # Use shared HTTP connection pool instead of creating new client per request
+        cx = await http_pool.get_client(SEMANTIC_SCHOLAR_BASE)
+        logger.info(f"Semantic Scholar searching: {query[:60]}...")
 
-            # Handle rate limiting
-            if r.status_code == 429:
-                logger.warning(f"Semantic Scholar rate limited (429). Waiting and retrying...")
-                await asyncio.sleep(10)
-                r = await cx.get(url, params=params, headers=headers)
+        # Use retry utility with exponential backoff instead of hardcoded delays
+        r = await retry_http_request(
+            cx, "GET", "/graph/v1/paper/search",  # Relative URL since we have base_url
+            params=params,
+            headers=headers,
+            config=ACADEMIC_API_RETRY_CONFIG,
+            operation_name="Semantic Scholar search"
+        )
 
-            if r.status_code != 200:
-                logger.error(f"Semantic Scholar HTTP {r.status_code}: {r.text[:200]}")
-                # Fallback to arXiv on error
-                logger.info("Falling back to arXiv search...")
-                return await arxiv_search(query, top)
+        if r.status_code != 200:
+            logger.error(f"Semantic Scholar HTTP {r.status_code}: {r.text[:200]}")
+            _semantic_scholar_breaker.record_failure()
+            # Fallback to arXiv on error
+            logger.info("Falling back to arXiv search...")
+            return await arxiv_search(query, top)
 
-            data = r.json()
+        _semantic_scholar_breaker.record_success()
+        data = r.json()
 
         results = []
         for paper in data.get("data", [])[:top]:
@@ -104,14 +140,19 @@ async def semantic_scholar_search(query: str, top: int = 10) -> List[Dict]:
             logger.info(f"No Semantic Scholar results, trying arXiv fallback...")
             return await arxiv_search(query, top)
 
+        # CACHE: Store results for future requests
+        await search_cache.set_search_results(query, "semantic_scholar", results)
+
         return results
 
     except httpx.TimeoutException:
         logger.error(f"Semantic Scholar timeout for: {query[:50]}")
+        _semantic_scholar_breaker.record_failure()
         logger.info("Falling back to arXiv search...")
         return await arxiv_search(query, top)
     except Exception as e:
         logger.error(f"Semantic Scholar error: {e}")
+        _semantic_scholar_breaker.record_failure()
         logger.info("Falling back to arXiv search...")
         return await arxiv_search(query, top)
 
@@ -121,9 +162,16 @@ async def pubmed_search(query: str, top: int = 10) -> List[Dict]:
     """
     Search PubMed for biomedical and life sciences literature
     Ideal for health/medical topics
+    Results are cached for 1 hour.
     """
+    # CACHE: Check for cached results first
+    cached_results = await search_cache.get_search_results(query, "pubmed")
+    if cached_results:
+        logger.info(f"Cache hit for PubMed query: {query[:50]}...")
+        return cached_results[:top]
+
     base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-    
+
     try:
         # Step 1: Search for IDs
         search_url = f"{base_url}/esearch.fcgi"
@@ -183,8 +231,13 @@ async def pubmed_search(query: str, top: int = 10) -> List[Dict]:
             })
         
         logger.info(f"PubMed found {len(results)} papers for: {query[:50]}")
+
+        # CACHE: Store results for future requests
+        if results:
+            await search_cache.set_search_results(query, "pubmed", results)
+
         return results
-    
+
     except Exception as e:
         logger.error(f"PubMed error: {e}")
         return []
@@ -195,7 +248,14 @@ async def arxiv_search(query: str, top: int = 10) -> List[Dict]:
     """
     Search arXiv for preprints (physics, math, CS, etc.)
     Best for cutting-edge research
+    Results are cached for 30 minutes (arXiv updates frequently).
     """
+    # CACHE: Check for cached results first
+    cached_results = await search_cache.get_search_results(query, "arxiv")
+    if cached_results:
+        logger.info(f"Cache hit for arXiv query: {query[:50]}...")
+        return cached_results[:top]
+
     url = "https://export.arxiv.org/api/query"
     params = {
         "search_query": f"all:{query}",
@@ -243,8 +303,13 @@ async def arxiv_search(query: str, top: int = 10) -> List[Dict]:
                 })
         
         logger.info(f"arXiv found {len(results)} papers for: {query[:50]}")
+
+        # CACHE: Store results for future requests
+        if results:
+            await search_cache.set_search_results(query, "arxiv", results)
+
         return results
-    
+
     except Exception as e:
         logger.error(f"arXiv error: {e}")
         return []
@@ -348,7 +413,8 @@ def score_source_quality(source: Dict[str, Any]) -> float:
     year = source.get("year", "")
     if year and str(year).isdigit():
         year_int = int(year)
-        current_year = 2025
+        from datetime import datetime
+        current_year = datetime.now().year
         age = current_year - year_int
         
         if 0 <= age <= 2:
