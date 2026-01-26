@@ -122,26 +122,31 @@ class SynthesisAgent(BaseAgent):
         run = await db().runs.find_one({"_id": ObjectId(run_id)})
         config = run.get("config", {})
         
-        # Build synthesis prompt
+        # Build synthesis prompt - collect ALL sources first, then create prompt
         source_texts = []
         for idx, source in enumerate(sources[:10]):  # Max 10 sources
             text_excerpt = source.get("text", "")[:2000]  # First 2000 chars
             source_texts.append(f"[Source {idx+1}] {source.get('title', 'Unknown')}\n{text_excerpt}\n")
-        
-            prompt = f"""Write a comprehensive paragraph synthesizing ONLY these sources on: "{query}"
 
-                         Sources:
-                         {''.join(source_texts)}
-                         
-                         CRITICAL REQUIREMENTS:
-                        - Write 200-400 words using ONLY information from the provided sources above
-                        - DO NOT add information, statistics, or studies not explicitly in the sources
-                        - Cite sources as [1], [2], etc. - ONLY cite sources that exist above
-                        - If sources are insufficient to fully answer the query, acknowledge this limitation
-                        - Be objective and evidence-based - no speculation
-                        - If you cannot find information in the sources, say "Sources did not address..."
-                        
-                        Write the synthesis paragraph now:"""
+        # CRITICAL FIX: Prompt must be OUTSIDE the loop to include ALL sources
+        # Previously this was inside the loop, causing only the last source to be used
+        all_sources_text = ''.join(source_texts)
+        logger.info(f"Building synthesis prompt with {len(source_texts)} sources ({len(all_sources_text)} chars)")
+
+        prompt = f"""Write a comprehensive paragraph synthesizing ONLY these sources on: "{query}"
+
+Sources:
+{all_sources_text}
+
+CRITICAL REQUIREMENTS:
+- Write 200-400 words using ONLY information from the provided sources above
+- DO NOT add information, statistics, or studies not explicitly in the sources
+- Cite sources as [1], [2], etc. - ONLY cite sources that exist above (you have {len(source_texts)} sources)
+- If sources are insufficient to fully answer the query, acknowledge this limitation
+- Be objective and evidence-based - no speculation
+- If you cannot find information in the sources, say "Sources did not address..."
+
+Write the synthesis paragraph now:"""
         
         response = await call_llm(
             messages=[
