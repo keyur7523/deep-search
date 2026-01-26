@@ -148,9 +148,10 @@ export function TopicForm({ onSubmit }: TopicFormProps) {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="hybrid">Academic + Web</SelectItem>
-              <SelectItem value="scholar">Academic Only</SelectItem>
-              <SelectItem value="serpapi">Web Only</SelectItem>
-              <SelectItem value="brave">Brave Search</SelectItem>
+              <SelectItem value="academic">Academic Only</SelectItem>
+              <SelectItem value="web">Web Only</SelectItem>
+              <SelectItem value="semantic_scholar">Semantic Scholar</SelectItem>
+              <SelectItem value="arxiv">arXiv</SelectItem>
             </SelectContent>
           </Select>
         </div>
