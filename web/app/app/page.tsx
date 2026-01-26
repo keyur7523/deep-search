@@ -12,6 +12,10 @@ import {
   Search
 } from "lucide-react"
 import { getRecentRuns } from "@/lib/api"
+import { useUIStore, useResearchStore } from "@/stores"
+import { useListNavigation } from "@/hooks/useKeyboardShortcuts"
+import { SkeletonList } from "@/components/ui/skeletons"
+import { PageTransition, StaggerContainer, StaggerItem } from "@/components/ui/animations"
 
 interface ResearchRun {
   id: string
@@ -22,8 +26,10 @@ interface ResearchRun {
 }
 
 export default function AppPage() {
-  const [currentRunId, setCurrentRunId] = useState<string | null>(null)
   const [runs, setRuns] = useState<ResearchRun[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const { sidebarOpen, toggleSidebar } = useUIStore()
+  const { currentRunId, setCurrentRunId } = useResearchStore()
 
   // Load existing runs on mount
   useEffect(() => {
@@ -42,6 +48,8 @@ export default function AppPage() {
         setRuns(formattedRuns)
       } catch (error) {
         console.error('Failed to load runs:', error)
+      } finally {
+        setIsLoading(false)
       }
     }
     
@@ -123,20 +131,41 @@ export default function AppPage() {
     }
   }
 
+  const { activeIndex, setActiveIndex } = useListNavigation(
+    runs.length,
+    (index) => {
+      const run = runs[index]
+      if (run) setCurrentRunId(run.id)
+    },
+    { enabled: runs.length > 0 }
+  )
+
   return (
-    <div className="flex h-screen bg-background">
+    <PageTransition className="h-full">
+      <div className="flex h-screen bg-background">
       {/* Left Sidebar - Fixed */}
-      <div className="w-80 border-r border-border flex flex-col fixed left-0 top-0 h-full bg-background z-[var(--z-sidebar,10)]">
+      {sidebarOpen && (
+        <div className="w-80 border-r border-border flex flex-col fixed left-0 top-0 h-full bg-background z-[var(--z-sidebar,10)]">
         {/* Header */}
         <div className="p-4 border-b border-border">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 flex items-center justify-center shadow-lg">
-              <svg viewBox="0 0 24 24" fill="none" className="w-7 h-7 text-white" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="2" />
-                <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
-              </svg>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-full bg-gradient-to-r from-purple-600 to-blue-600 flex items-center justify-center shadow-lg">
+                <svg viewBox="0 0 24 24" fill="none" className="w-7 h-7 text-white" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="2" />
+                  <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
+                </svg>
+              </div>
+              <span className="font-semibold text-lg text-foreground">Deep Research</span>
             </div>
-            <span className="font-semibold text-lg text-foreground">Deep Research</span>
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="text-xs text-muted-foreground hover:text-foreground"
+              aria-label="Hide sidebar"
+            >
+              Hide
+            </button>
           </div>
         </div>
         
@@ -151,46 +180,65 @@ export default function AppPage() {
           
           <ScrollArea className="flex-1 min-h-0">
             <div className="p-2">
-              {runs.length === 0 ? (
+              {isLoading ? (
+                <div className="p-2">
+                  <SkeletonList items={6} hasIcon={false} hasSubtext={true} />
+                </div>
+              ) : runs.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
                   <Search className="w-8 h-8 mx-auto mb-2 opacity-50" />
                   <p className="text-sm">No research runs yet</p>
                   <p className="text-xs">Start your first research above</p>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {runs.map((run) => (
-                    <button
-                      key={run.id}
-                      className={`w-full px-3 py-2 rounded-lg transition-colors flex items-center justify-between ${
-                        currentRunId === run.id 
-                          ? 'bg-accent border border-primary/20' 
-                          : 'hover:bg-accent/50'
-                      }`}
-                      onClick={() => setCurrentRunId(run.id)}
-                      aria-label={`View research: ${run.title}`}
-                      aria-current={currentRunId === run.id ? 'page' : undefined}
-                    >
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        {getStatusIcon(run.status)}
-                        <span className="text-sm font-medium truncate text-left">
-                          {run.title}
-                        </span>
-                      </div>
-                      <div className="text-xs text-muted-foreground ml-2">
-                        {run.progress}%
-                      </div>
-                    </button>
+                <StaggerContainer className="space-y-2">
+                  {runs.map((run, index) => (
+                    <StaggerItem key={run.id}>
+                      <button
+                        className={`w-full px-3 py-2 rounded-lg transition-colors flex items-center justify-between outline-none ${
+                          currentRunId === run.id || activeIndex === index
+                            ? 'bg-accent border border-primary/20'
+                            : 'hover:bg-accent/50'
+                        }`}
+                        onClick={() => setCurrentRunId(run.id)}
+                        onFocus={() => setActiveIndex(index)}
+                        aria-label={`View research: ${run.title}`}
+                        aria-current={currentRunId === run.id ? 'page' : undefined}
+                      >
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          {getStatusIcon(run.status)}
+                          <span className="text-sm font-medium truncate text-left">
+                            {run.title}
+                          </span>
+                        </div>
+                        <div className="text-xs text-muted-foreground ml-2">
+                          {run.progress}%
+                        </div>
+                      </button>
+                    </StaggerItem>
                   ))}
-                </div>
+                </StaggerContainer>
               )}
             </div>
           </ScrollArea>
         </div>
       </div>
+      )}
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col ml-80">
+      <div className={`flex-1 flex flex-col ${sidebarOpen ? 'ml-80' : 'ml-0'}`}>
+        {!sidebarOpen && (
+          <div className="p-3 border-b border-border bg-background flex items-center justify-between">
+            <span className="text-sm text-muted-foreground">Sidebar hidden</span>
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="text-sm font-medium text-primary hover:underline"
+            >
+              Show sidebar
+            </button>
+          </div>
+        )}
         <ResearchChat
           runId={currentRunId}
           onRunStarted={handleRunStarted}
@@ -199,5 +247,6 @@ export default function AppPage() {
         />
       </div>
     </div>
+    </PageTransition>
   )
 }
