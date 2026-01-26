@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { ExternalLink, BookOpen, Globe, Calendar, Users, Award, FileText } from "lucide-react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useResearchStore } from "@/stores"
 
 interface Source {
   _id: string
@@ -33,6 +34,7 @@ export function SourcesList({ runId }: { runId: string }) {
   const [data, setData] = useState<SourcesData | null>(null)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<"all" | "academic" | "web">("all")
+  const setSources = useResearchStore((state) => state.setSources)
 
   useEffect(() => {
     fetchSources()
@@ -40,10 +42,27 @@ export function SourcesList({ runId }: { runId: string }) {
 
   const fetchSources = async () => {
     try {
+      setLoading(true)
       const response = await fetch(`/api/runs/${runId}/sources`)
       if (response.ok) {
         const sourcesData = await response.json()
         setData(sourcesData)
+        setSources(
+          sourcesData.sources.map((source: Source) => ({
+            id: source._id,
+            url: source.url,
+            title: source.title,
+            type: source.type,
+            authors: source.authors,
+            year: source.year,
+            venue: source.venue,
+            citations: source.citations,
+            score: source.score,
+            textLength: source.textLength,
+            sectionTitle: source.sectionTitle,
+            sectionIdx: source.sectionIdx,
+          }))
+        )
       }
     } catch (error) {
       console.error("Failed to fetch sources:", error)
@@ -54,7 +73,7 @@ export function SourcesList({ runId }: { runId: string }) {
 
   if (loading) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-4 min-h-[360px]">
         <Skeleton className="h-24 w-full" />
         <Skeleton className="h-32 w-full" />
         <Skeleton className="h-32 w-full" />
@@ -252,4 +271,3 @@ function SourceCard({ source }: { source: Source }) {
     </Card>
   )
 }
-
