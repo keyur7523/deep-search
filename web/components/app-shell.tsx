@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react"
 import Link from "next/link"
 import { Menu, X, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { ThemeToggle } from "@/components/theme-toggle"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,6 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { motion } from "@/components/ui/animations"
 
 interface AppShellProps {
   children: ReactNode
@@ -48,19 +50,24 @@ export function AppShell({ children, leftRail, showLeftRail = false }: AppShellP
             </Link>
           </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="rounded-full">
-                <User className="h-5 w-5" />
+          <div className="flex items-center gap-2">
+            <ThemeToggle variant="ghost" size="icon" />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+              <Button asChild variant="ghost" size="icon" className="rounded-full">
+                <motion.button whileTap={{ scale: 0.98 }}>
+                  <User className="h-5 w-5" />
+                </motion.button>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuItem>Profile</DropdownMenuItem>
-              <DropdownMenuItem>Settings</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem>Sign out</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem>Profile</DropdownMenuItem>
+                <DropdownMenuItem>Settings</DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem>Sign out</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </header>
 

@@ -1,8 +1,12 @@
+import asyncio
 import os, httpx, urllib.parse
-from typing import List, Dict
+from typing import List, Dict, Optional, Callable, Awaitable
 import logging
 
-logger = logging.getLogger(__name__)    
+logger = logging.getLogger(__name__)
+
+# Type alias for search functions
+SearchFunction = Callable[[str, int], Awaitable[List[Dict]]]    
 
 def _get_provider():
     return os.getenv("SEARCH_PROVIDER", "serpapi")
@@ -256,3 +260,190 @@ async def _crossref_search(query: str, top: int = 8) -> List[Dict]:
     except Exception as e:
         print(f"Error searching CrossRef: {e}")
         return []
+
+
+async def parallel_multi_source_search(
+    query: str,
+    sources: List[str] = None,
+    results_per_source: int = 5,
+    timeout: float = 20.0
+) -> Dict[str, List[Dict]]:
+    """
+    Run searches across multiple sources in parallel.
+
+    Efficiently searches multiple providers simultaneously and returns
+    results organized by source.
+
+    Args:
+        query: Search query string
+        sources: List of source names to search. Options:
+                 - "web" (SerpAPI or Brave)
+                 - "scholar" (Google Scholar via SerpAPI)
+                 - "crossref" (CrossRef academic)
+                 - "semantic_scholar" (Semantic Scholar API)
+                 - "arxiv" (arXiv preprints)
+                 - "pubmed" (PubMed biomedical)
+                 Default: ["web", "scholar", "crossref"]
+        results_per_source: Number of results to fetch per source
+        timeout: Timeout for each search in seconds
+
+    Returns:
+        Dict mapping source name to list of search results.
+        Failed searches return empty lists.
+
+    Example:
+        results = await parallel_multi_source_search(
+            "machine learning optimization",
+            sources=["scholar", "arxiv", "crossref"],
+            results_per_source=10
+        )
+        # results = {"scholar": [...], "arxiv": [...], "crossref": [...]}
+    """
+    if sources is None:
+        sources = ["web", "scholar", "crossref"]
+
+    # Map source names to search functions
+    search_functions: Dict[str, SearchFunction] = {
+        "web": _serpapi,
+        "brave": _brave,
+        "scholar": _scholar,
+        "crossref": _crossref_search,
+    }
+
+    # Dynamically import academic searches if requested
+    academic_sources = {"semantic_scholar", "arxiv", "pubmed"}
+    if academic_sources & set(sources):
+        from .academic import (
+            semantic_scholar_search,
+            arxiv_search,
+            pubmed_search
+        )
+        search_functions["semantic_scholar"] = semantic_scholar_search
+        search_functions["arxiv"] = arxiv_search
+        search_functions["pubmed"] = pubmed_search
+
+    # Filter to valid sources
+    valid_sources = [s for s in sources if s in search_functions]
+    if not valid_sources:
+        logger.warning(f"No valid sources specified: {sources}")
+        return {}
+
+    async def search_with_timeout(source: str) -> tuple[str, List[Dict]]:
+        func = search_functions[source]
+        try:
+            results = await asyncio.wait_for(
+                func(query, results_per_source),
+                timeout=timeout
+            )
+            # Add source tag to each result
+            for r in results:
+                r["_source"] = source
+            logger.info(f"Parallel search: {source} returned {len(results)} results")
+            return (source, results)
+        except asyncio.TimeoutError:
+            logger.warning(f"Parallel search timeout: {source}")
+            return (source, [])
+        except Exception as e:
+            logger.warning(f"Parallel search error ({source}): {e}")
+            return (source, [])
+
+    # Run all searches in parallel
+    tasks = [search_with_timeout(source) for source in valid_sources]
+    results_tuples = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Build result dict
+    results: Dict[str, List[Dict]] = {}
+    for item in results_tuples:
+        if isinstance(item, Exception):
+            logger.error(f"Search task exception: {item}")
+            continue
+        source, source_results = item
+        results[source] = source_results
+
+    total = sum(len(r) for r in results.values())
+    logger.info(f"Parallel multi-source search complete: {total} total results from {len(results)} sources")
+
+    return results
+
+
+async def unified_search(
+    query: str,
+    total_results: int = 20,
+    academic_weight: float = 0.7,
+    timeout: float = 20.0
+) -> List[Dict]:
+    """
+    Unified search combining academic and web sources with deduplication.
+
+    Intelligently distributes search budget across sources based on
+    academic_weight parameter, runs searches in parallel, then
+    deduplicates and scores results.
+
+    Args:
+        query: Search query string
+        total_results: Total number of results to return
+        academic_weight: Proportion of results from academic sources (0.0-1.0)
+        timeout: Timeout for searches
+
+    Returns:
+        Combined, deduplicated, scored list of search results
+    """
+    # Calculate results allocation
+    academic_count = int(total_results * academic_weight)
+    web_count = total_results - academic_count
+
+    # Select sources based on weight
+    sources = []
+    results_per_source = {}
+
+    if academic_count > 0:
+        # Split academic results across multiple sources
+        per_academic = max(3, academic_count // 3)
+        sources.extend(["semantic_scholar", "scholar", "crossref"])
+        for s in ["semantic_scholar", "scholar", "crossref"]:
+            results_per_source[s] = per_academic
+
+    if web_count > 0:
+        sources.append("web")
+        results_per_source["web"] = web_count
+
+    # Run parallel search
+    source_results = await parallel_multi_source_search(
+        query,
+        sources=sources,
+        results_per_source=max(results_per_source.values()) if results_per_source else 5,
+        timeout=timeout
+    )
+
+    # Combine and deduplicate
+    combined = []
+    seen_urls = set()
+    seen_titles = set()
+
+    # Prioritize by source order (academic first)
+    source_priority = ["semantic_scholar", "scholar", "crossref", "arxiv", "pubmed", "web", "brave"]
+
+    for source in source_priority:
+        if source not in source_results:
+            continue
+
+        for result in source_results[source]:
+            url = result.get("url", "")
+            title = result.get("title", "").lower().strip()
+
+            # Deduplicate by URL and title similarity
+            if url and url not in seen_urls and title not in seen_titles:
+                seen_urls.add(url)
+                seen_titles.add(title)
+                combined.append(result)
+
+    # Score results if they don't have scores
+    from .academic import score_source_quality
+    for result in combined:
+        if "score" not in result or result.get("score", 0) == 0:
+            result["score"] = score_source_quality(result)
+
+    # Sort by score and return top results
+    combined.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    return combined[:total_results]

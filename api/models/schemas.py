@@ -30,6 +30,13 @@ class CreateRunRequest(BaseModel):
     """Request to create a new research run with optional config"""
     projectId: str
     config: Dict[str, Any] = Field(default_factory=dict)
+    idempotencyKey: Optional[str] = Field(
+        default=None,
+        min_length=16,
+        max_length=64,
+        description="Optional idempotency key to prevent duplicate run creation on retry. "
+                    "If provided, the same key will return the same run_id for 24 hours."
+    )
 
 class AgentTaskResponse(BaseModel):
     """Response model for agent task data"""

@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 import { openLiveStream, type LiveMsg } from "@/lib/live";
 
 export default function ThinkingNow({ apiBase, runId }:{ apiBase:string; runId:string | null }) {
@@ -20,15 +22,17 @@ export default function ThinkingNow({ apiBase, runId }:{ apiBase:string; runId:s
   if (!m) return null;
 
   return (
-    <div className="fixed top-4 right-4 z-[9999] flex items-center rounded-2xl border border-border bg-white/90 backdrop-blur px-3 py-2 shadow-sm text-sm">
+    <div
+      className="fixed top-4 right-4 z-[9999] flex items-center rounded-2xl border border-border bg-white/90 backdrop-blur px-3 py-2 shadow-sm text-sm"
+      role="status"
+      aria-live="polite"
+    >
       {m.kind !== "done" ? (
-        <svg className="mr-2 h-4 w-4 animate-spin" viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" opacity=".2"/>
-          <path d="M22 12a10 10 0 0 0-10-10" fill="none" stroke="currentColor" strokeWidth="2"/>
-        </svg>
+        <Skeleton className="mr-2 h-4 w-4 rounded-full" aria-hidden="true" />
       ) : null}
       <span className="mr-2 uppercase tracking-wide text-xs text-primary">{m.kind}</span>
       <span className="text-foreground">{m.msg}</span>
+      <span className="sr-only">Live research update</span>
     </div>
   );
 }

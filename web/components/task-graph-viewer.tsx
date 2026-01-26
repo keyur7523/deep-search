@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { getTaskGraph } from "@/lib/api";
 import type { AgentGraph, AgentGraphNode } from "@/lib/types";
 import { RefreshCw } from "lucide-react";
@@ -71,9 +72,31 @@ export function TaskGraphViewer({
   if (loading) {
     return (
       <Card>
-        <CardContent className="p-6">
-          <div className="flex items-center justify-center">
-            <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <Skeleton className="h-6 w-24" />
+            <Skeleton className="h-8 w-20" />
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {/* Status badges skeleton */}
+            <div className="flex gap-2">
+              {[1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-5 w-20 rounded-full" />
+              ))}
+            </div>
+            {/* Task groups skeleton */}
+            {[1, 2].map((group) => (
+              <div key={group} className="space-y-2">
+                <Skeleton className="h-4 w-20" />
+                <div className="grid grid-cols-3 gap-2">
+                  {[1, 2, 3].map((task) => (
+                    <Skeleton key={task} className="h-10 rounded" />
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         </CardContent>
       </Card>

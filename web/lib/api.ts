@@ -274,10 +274,16 @@ export function subscribeToAgentEvents(
   const eventSource = new EventSource(
     `${API_BASE}/runs/${runId}/agent-events/stream`
   );
-  
+
+  // Track consecutive parse errors to detect persistent issues
+  let parseErrorCount = 0;
+  const MAX_PARSE_ERRORS = 5;
+
   eventSource.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
+      parseErrorCount = 0; // Reset on successful parse
+
       if (data.done) {
         eventSource.close();
         onDone?.();
@@ -285,16 +291,25 @@ export function subscribeToAgentEvents(
         onEvent(data);
       }
     } catch (error) {
-      console.error("Failed to parse event:", error);
+      parseErrorCount++;
+      console.error("Failed to parse agent event:", error, "Data:", e.data?.substring(0, 100));
+
+      // MEMORY LEAK FIX: Close connection after too many parse errors
+      // This prevents infinite reconnection attempts with malformed data
+      if (parseErrorCount >= MAX_PARSE_ERRORS) {
+        console.error(`Closing EventSource after ${MAX_PARSE_ERRORS} consecutive parse errors`);
+        eventSource.close();
+        onError?.(new Error("Too many parse errors - connection closed"));
+      }
     }
   };
-  
+
   eventSource.onerror = (error) => {
     console.error("EventSource error:", error);
     eventSource.close();
     onError?.(new Error("Connection error"));
   };
-  
+
   return () => eventSource.close();
 }
 

@@ -9,9 +9,9 @@ import json
 from pydantic import BaseModel, Field
 from bson import ObjectId
 from dotenv import load_dotenv
-import json
-from models.db import db, ensure_indexes
+from models.db import db, ensure_indexes, delete_run_atomically, check_idempotency_key, store_idempotency_key
 from services.s3util import presign_put_url
+from services.http_pool import http_pool
 from logic.research import start_run_task, get_run_progress, get_outline, get_report, get_research_threads, get_research_messages, get_research_thread
 from agents.research_agentic import start_agentic_run
 from models.schemas import (
@@ -20,6 +20,21 @@ from models.schemas import (
 )
 from models.db import init_agent_collections, create_agent_event
 from agents import route_research_mode, explain_routing_decision
+
+# Authentication - JWT-based with user isolation
+from auth import get_current_user, User
+
+# Rate limiting
+from middleware.rate_limit import rate_limit_dependency
+
+# Input validation
+from middleware.validation import sanitize_topic, sanitize_goal, validate_config, ValidationError
+
+# Audit logging
+from middleware.audit import log_run_created, log_run_deleted, audit_log, AuditEvent
+
+# Error handling
+from middleware.errors import setup_exception_handlers, APIError, ErrorCode
 
 # Configure logging
 logging.basicConfig(
@@ -69,11 +84,20 @@ async def lifespan(app: FastAPI):
 
     yield  # Application runs here
 
-    # Shutdown (if needed)
+    # Shutdown - cleanup resources
     logger.info("👋 Shutting down Deep Research API...")
+
+    # Close HTTP connection pools
+    logger.info("🔌 Closing HTTP connection pools...")
+    await http_pool.close_all()
+    logger.info("✅ HTTP connection pools closed")
 
 app = FastAPI(title="Deep Research API", version="0.1.0", lifespan=lifespan)
 logger.info("FastAPI app created")
+
+# Setup global exception handlers for consistent error responses
+setup_exception_handlers(app)
+logger.info("Exception handlers configured")
 
 # Allow localhost for development and production URLs
 # SECURITY: Always explicitly configure allowed origins via WEB_ORIGINS env var
@@ -103,28 +127,18 @@ app.add_middleware(
 )
 logger.info(f"CORS origins configured: {origins}")
 
-class User(BaseModel):
-    sub: str
-
-# SECURITY WARNING: This is a placeholder authentication.
-# In production, implement proper JWT validation or OAuth2.
-# Current implementation allows ALL requests as "demo-user".
-_AUTH_WARNING_LOGGED = False
-
-async def get_user(request: Request) -> User:
-    """
-    SECURITY: Replace with proper authentication before production use!
-
-    Recommended implementations:
-    - JWT validation with proper secret key
-    - OAuth2 with your identity provider
-    - API key validation for service-to-service calls
-    """
-    global _AUTH_WARNING_LOGGED
-    if not _AUTH_WARNING_LOGGED and os.getenv("RENDER"):
-        logger.warning("⚠️ SECURITY: Using demo authentication in production! Implement proper auth.")
-        _AUTH_WARNING_LOGGED = True
-    return User(sub="demo-user")
+# Note: User class and get_current_user are now imported from auth module
+# Authentication supports:
+# - JWT tokens (Bearer authentication)
+# - API keys (X-API-Key header)
+# - Demo mode (for development, when no auth configured)
+#
+# Configure via environment variables:
+# - JWT_SECRET_KEY: Secret for HS256 algorithm
+# - JWT_JWKS_URL: JWKS URL for RS256 algorithm
+# - JWT_ISSUER: Expected token issuer
+# - JWT_AUDIENCE: Expected token audience
+# - AUTH_DEMO_MODE: Set to "true" to enable demo mode
 
 def _ser_live(doc):
     if not doc: return {}
@@ -162,6 +176,84 @@ async def root():
 async def health():
     return {"ok": True}
 
+@app.delete("/runs/{run_id}")
+async def delete_run(run_id: str, user: User = Depends(get_current_user)):
+    """Delete a research run and all associated data"""
+    try:
+        rid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(400, "Invalid run ID")
+
+    # Check run exists
+    run = await db().runs.find_one({"_id": rid})
+    if not run:
+        raise HTTPException(404, "Run not found")
+
+    # USER ISOLATION: Verify the run belongs to this user
+    # Check via project ownership or direct userId on run
+    if run.get("userId"):
+        if run["userId"] != user.sub:
+            logger.warning(f"User {user.sub} attempted to delete run {run_id} owned by {run['userId']}")
+            raise HTTPException(403, "Not authorized to delete this run")
+    elif run.get("projectId"):
+        project = await db().projects.find_one({"_id": run["projectId"], "userId": user.sub})
+        if not project:
+            logger.warning(f"User {user.sub} attempted to delete run {run_id} - project ownership check failed")
+            raise HTTPException(403, "Not authorized to delete this run")
+
+    # ATOMIC DELETION: Use transaction to ensure all-or-nothing deletion
+    # This prevents orphaned data if deletion fails midway
+    try:
+        await delete_run_atomically(rid)
+        logger.info(f"Atomically deleted run {run_id} and all associated data")
+
+        # AUDIT: Log run deletion for compliance
+        await log_run_deleted(user_id=user.sub, run_id=run_id)
+
+        return {"status": "deleted", "run_id": run_id}
+    except Exception as e:
+        logger.error(f"Failed to delete run {run_id}: {e}")
+        raise HTTPException(500, f"Failed to delete run: {str(e)}")
+
+@app.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str, user: User = Depends(get_current_user)):
+    """Cancel an in-progress research run"""
+    try:
+        rid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(400, "Invalid run ID")
+
+    run = await db().runs.find_one({"_id": rid})
+    if not run:
+        raise HTTPException(404, "Run not found")
+
+    # USER ISOLATION: Verify the run belongs to this user
+    if run.get("userId"):
+        if run["userId"] != user.sub:
+            raise HTTPException(403, "Not authorized to cancel this run")
+    elif run.get("projectId"):
+        project = await db().projects.find_one({"_id": run["projectId"], "userId": user.sub})
+        if not project:
+            raise HTTPException(403, "Not authorized to cancel this run")
+
+    if run.get("status") in ["done", "failed", "cancelled"]:
+        raise HTTPException(400, f"Run already {run.get('status')}, cannot cancel")
+    
+    # Update run status
+    await db().runs.update_one(
+        {"_id": rid},
+        {"$set": {"status": "cancelled"}}
+    )
+    
+    # Cancel any pending tasks
+    await db().agentTasks.update_many(
+        {"runId": rid, "status": {"$in": ["pending", "running"]}},
+        {"$set": {"status": "cancelled"}}
+    )
+    
+    logger.info(f"Cancelled run {run_id}")
+    return {"status": "cancelled", "run_id": run_id}
+
 # Handle CORS preflight requests manually
 @app.options("/{path:path}")
 async def options_handler(path: str):
@@ -169,39 +261,61 @@ async def options_handler(path: str):
 
 # --- Projects ---
 @app.post("/projects")
-async def create_project(request: Request, user: User = Depends(get_user)):
+async def create_project(
+    request: Request,
+    user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(rate_limit_dependency("create_project")),
+):
+    """Create a new research project. Rate limited."""
     try:
         # Get the raw body
         body = await request.body()
         logger.info(f"📝 Raw body: {body}")
-        
+
         # Parse JSON
         import json
         data = json.loads(body.decode())
         logger.info(f"📝 Parsed data: {data}")
-        
+
         # Validate the data
         p = NewProject(**data)
-        logger.info(f"📝 Validated project: title='{p.title}', goal='{p.goal}', maxParagraphs={p.maxParagraphs}")
-        
+
+        # SECURITY: Sanitize user inputs to prevent injection attacks
+        sanitized_title = sanitize_topic(p.title)
+        sanitized_goal = sanitize_goal(p.goal)
+        logger.info(f"📝 Validated project: title='{sanitized_title}', goal='{sanitized_goal[:50]}...', maxParagraphs={p.maxParagraphs}")
+
         doc = {
             "userId": user.sub,
-            "title": p.title,
-            "goalMd": p.goal,
+            "title": sanitized_title,
+            "goalMd": sanitized_goal,
             "maxParagraphs": p.maxParagraphs,
             "createdAt": asyncio.get_event_loop().time(),
         }
         res = await db().projects.insert_one(doc)
         project_id = str(res.inserted_id)
         logger.info(f"✅ Project created successfully with ID: {project_id}")
+
+        # AUDIT: Log project creation for compliance
+        await audit_log(
+            event=AuditEvent.PROJECT_CREATED,
+            user_id=user.sub,
+            resource_type="project",
+            resource_id=project_id,
+            details={"title": sanitized_title[:100]}
+        )
+
         return {"project_id": project_id}
-        
+
+    except ValidationError:
+        # Re-raise validation errors as-is (they're already HTTPException)
+        raise
     except Exception as e:
         logger.error(f"📝 Error creating project: {e}")
         raise HTTPException(status_code=422, detail=str(e))
 
 @app.post("/projects/{project_id}/runs")
-async def create_run(project_id: str, cfg: NewRun, user: User = Depends(get_user)):
+async def create_run(project_id: str, cfg: NewRun, user: User = Depends(get_current_user)):
     logger.info(f"🏃 Starting new research run for project: {project_id}")
     try:
         pid = ObjectId(project_id)
@@ -218,6 +332,7 @@ async def create_run(project_id: str, cfg: NewRun, user: User = Depends(get_user
     logger.info(f"📋 Found project: '{project.get('title', 'Unknown')}'")
     run_doc = {
         "projectId": pid,
+        "userId": user.sub,  # Store userId for efficient user isolation queries
         "status": "queued",
         "config": cfg.model_dump(),
         "createdAt": asyncio.get_event_loop().time(),
@@ -230,24 +345,24 @@ async def create_run(project_id: str, cfg: NewRun, user: User = Depends(get_user
 
 # --- Progress + data ---
 @app.get("/runs/{run_id}/status")
-async def run_status(run_id: str, user: User = Depends(get_user)):
+async def run_status(run_id: str, user: User = Depends(get_current_user)):
     data = await get_run_progress(run_id, user.sub)
     if not data: raise HTTPException(404, "run not found")
     return data
 
 @app.get("/runs/{run_id}/outline")
-async def run_outline(run_id: str, user: User = Depends(get_user)):
+async def run_outline(run_id: str, user: User = Depends(get_current_user)):
     items = await get_outline(run_id, user.sub)
     return {"items": items}
 
 @app.get("/runs/{run_id}/report")
-async def run_report(run_id: str, user: User = Depends(get_user)):
+async def run_report(run_id: str, user: User = Depends(get_current_user)):
     rep = await get_report(run_id, user.sub)
     if not rep: raise HTTPException(404, "report not ready")
     return rep
 
 @app.get("/runs/{run_id}/assets")
-async def run_assets(run_id: str, user: User = Depends(get_user)):
+async def run_assets(run_id: str, user: User = Depends(get_current_user)):
     """Get all visual assets (figures, diagrams) for a run"""
     try:
         rid = ObjectId(run_id)
@@ -271,7 +386,7 @@ async def run_assets(run_id: str, user: User = Depends(get_user)):
     return {"assets": assets}
 
 @app.get("/runs/{run_id}/sources")
-async def run_sources(run_id: str, user: User = Depends(get_user)):
+async def run_sources(run_id: str, user: User = Depends(get_current_user)):
     """Get all sources used in a research run"""
     try:
         rid = ObjectId(run_id)
@@ -280,14 +395,27 @@ async def run_sources(run_id: str, user: User = Depends(get_user)):
     
     # Get all sources for this run
     sources_cursor = db().sources.find({"runId": rid}).sort([("score", -1), ("_id", 1)])
+    raw_sources = [s async for s in sources_cursor]
+
+    # FIX N+1 QUERY: Batch fetch all outline items instead of one per source
+    # Collect unique outline item IDs
+    outline_ids = list(set(
+        s["outlineItemId"] for s in raw_sources
+        if s.get("outlineItemId")
+    ))
+
+    # Single batch query for all outline items
+    outline_map = {}
+    if outline_ids:
+        outline_cursor = db().outlineItems.find({"_id": {"$in": outline_ids}})
+        async for item in outline_cursor:
+            outline_map[item["_id"]] = item
+
+    # Build response using the pre-fetched outline map
     sources = []
-    
-    async for source in sources_cursor:
-        # Get the outline item to know which section this source belongs to
-        outline_item = None
-        if source.get("outlineItemId"):
-            outline_item = await db().outlineItems.find_one({"_id": source["outlineItemId"]})
-        
+    for source in raw_sources:
+        outline_item = outline_map.get(source.get("outlineItemId"))
+
         sources.append({
             "_id": str(source["_id"]),
             "url": source.get("url", ""),
@@ -318,7 +446,7 @@ async def run_sources(run_id: str, user: User = Depends(get_user)):
     }
 
 @app.get("/runs/{run_id}/paragraphs")
-async def run_paragraphs(run_id: str, user: User = Depends(get_user)):
+async def run_paragraphs(run_id: str, user: User = Depends(get_current_user)):
     """Get individual paragraphs for a run"""
     try:
         rid = ObjectId(run_id)
@@ -338,19 +466,32 @@ async def run_paragraphs(run_id: str, user: User = Depends(get_user)):
     return {"paragraphs": paragraphs}
 
 @app.get("/runs")
-async def list_runs(user: User = Depends(get_user), limit: int = Query(5, ge=1, le=20)):
+async def list_runs(user: User = Depends(get_current_user), limit: int = Query(5, ge=1, le=20)):
     """List recent runs for the user"""
-    # For now, get all runs since userId filtering isn't working
-    runs_cursor = db().runs.find().sort("createdAt", -1).limit(limit)
+    # USER ISOLATION: Get user's projects first, with title for topic lookup
+    # FIX N+1 QUERY: Fetch projects once with titles, not one per run
+    user_projects = {}
+    async for project in db().projects.find({"userId": user.sub}, {"_id": 1, "title": 1}):
+        user_projects[project["_id"]] = project.get("title", "Unknown Topic")
+
+    user_project_ids = list(user_projects.keys())
+
+    # Build query for runs belonging to user (via project or direct userId)
+    query = {
+        "$or": [
+            {"projectId": {"$in": user_project_ids}},
+            {"userId": user.sub}
+        ]
+    } if user_project_ids else {"userId": user.sub}
+
+    runs_cursor = db().runs.find(query).sort("createdAt", -1).limit(limit)
     runs = []
     async for run in runs_cursor:
-        # Get topic from project if available
+        # Get topic from pre-fetched project map (no additional DB query)
         topic = "Unknown Topic"
         if run.get("projectId"):
-            project = await db().projects.find_one({"_id": run["projectId"]})
-            if project:
-                topic = project.get("title", "Unknown Topic")
-        
+            topic = user_projects.get(run["projectId"], "Unknown Topic")
+
         runs.append({
             "id": str(run["_id"]),
             "topic": topic,
@@ -364,19 +505,19 @@ async def list_runs(user: User = Depends(get_user), limit: int = Query(5, ge=1, 
 
 # New Research Thread endpoints
 @app.get("/research/threads")
-async def get_threads(user: User = Depends(get_user), limit: int = Query(20, ge=1, le=100)):
+async def get_threads(user: User = Depends(get_current_user), limit: int = Query(20, ge=1, le=100)):
     """Get research threads for the user"""
     threads = await get_research_threads(user.sub, limit)
     return {"threads": threads}
 
 @app.get("/research/threads/{thread_id}/messages")
-async def get_messages(thread_id: str, user: User = Depends(get_user), limit: int = Query(50, ge=1, le=200)):
+async def get_messages(thread_id: str, user: User = Depends(get_current_user), limit: int = Query(50, ge=1, le=200)):
     """Get messages for a specific research thread"""
     messages = await get_research_messages(thread_id, user.sub, limit)
     return {"messages": messages}
 
 @app.get("/research/threads/{thread_id}")
-async def get_thread(thread_id: str, user: User = Depends(get_user)):
+async def get_thread(thread_id: str, user: User = Depends(get_current_user)):
     """Get a specific research thread with full details"""
     thread = await get_research_thread(thread_id, user.sub)
     if not thread:
@@ -483,19 +624,22 @@ async def live_stream(run_id: str):
 async def s3_presign(
     key: str = Query(..., description="S3 object key"),
     content_type: str = Query("application/octet-stream"),
-    user: User = Depends(get_user),
+    user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(rate_limit_dependency("s3_presign")),
 ):
+    """Get presigned URL for S3 upload. Rate limited to prevent abuse."""
     url = presign_put_url(key, content_type)
     return {"url": url}
 
 @app.post("/runs")
 async def create_run_v2(
     request: CreateRunRequest,
-    user: User = Depends(get_user)
+    user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(rate_limit_dependency("create_run")),
 ):
     """
     Create research run with automatic simple/agentic routing.
-    
+
     Body:
         projectId: MongoDB project ID
         config: {
@@ -505,35 +649,47 @@ async def create_run_v2(
             requireRecent?: boolean            // Prioritize recent papers
             maxParagraphs?: number             // Report length
         }
+        idempotencyKey?: string  // Optional key to prevent duplicate runs (16-64 chars)
     """
     logger.info(f"🔄 V2 run creation for project: {request.projectId}")
-    
+
+    # IDEMPOTENCY CHECK: Return existing result if key was used before
+    if request.idempotencyKey:
+        existing_result = await check_idempotency_key(request.idempotencyKey, user.sub)
+        if existing_result:
+            logger.info(f"♻️ Returning cached result for idempotency key")
+            return existing_result
+
     try:
         pid = ObjectId(request.projectId)
     except Exception:
         raise HTTPException(400, "Invalid project ID")
-    
+
     # Get project to extract topic
     project = await db().projects.find_one({"_id": pid, "userId": user.sub})
     if not project:
         raise HTTPException(404, "Project not found")
-    
+
     topic = project.get("title", "")
     logger.info(f"📋 Topic: {topic}")
-    
-    # Determine mode using coordinator
-    mode = route_research_mode(topic, request.config)
-    routing_info = explain_routing_decision(topic, request.config)
+
+    # SECURITY: Validate config to prevent injection attacks
+    validated_config = validate_config(request.config)
+
+    # Determine mode using coordinator (use validated config)
+    mode = route_research_mode(topic, validated_config)
+    routing_info = explain_routing_decision(topic, validated_config)
     logger.info(f"🎯 Routing decision: {mode} (score: {routing_info['score']})")
     logger.info(f"💡 Reasoning: {routing_info['reasoning']}")
-    
-    # Create run document
+
+    # Create run document with userId for direct ownership tracking
     from datetime import datetime
     run_doc = {
         "projectId": pid,
+        "userId": user.sub,  # Store userId for efficient user isolation queries
         "status": "queued",
         "mode": mode,
-        "config": request.config,
+        "config": validated_config,  # Store validated config, not raw input
         "routing": routing_info,
         "createdAt": asyncio.get_event_loop().time(),
     }
@@ -547,18 +703,34 @@ async def create_run_v2(
     else:
         logger.info(f"🤖 Starting agentic pipeline for run: {run_id}")
         asyncio.create_task(start_agentic_run(run_id))
-    
-    return {
+
+    # Build response
+    response = {
         "run_id": run_id,
         "mode": mode,
         "routing": routing_info
     }
 
+    # IDEMPOTENCY: Store key with response for future duplicate requests
+    if request.idempotencyKey:
+        await store_idempotency_key(request.idempotencyKey, user.sub, response)
+        logger.info(f"🔑 Stored idempotency key for run {run_id}")
+
+    # AUDIT: Log run creation for compliance
+    await log_run_created(
+        user_id=user.sub,
+        run_id=run_id,
+        project_id=request.projectId,
+        mode=mode
+    )
+
+    return response
+
 @app.post("/runs/{run_id}/agent-mode")
 async def set_agent_mode(
     run_id: str, 
     request: AgentModeRequest,
-    user: User = Depends(get_user)
+    user: User = Depends(get_current_user)
 ):
     """
     Override agent mode for a run.
@@ -588,7 +760,7 @@ async def set_agent_mode(
     return {"status": "ok", "mode": request.mode}
 
 @app.get("/runs/{run_id}/graph", response_model=AgentGraphResponse)
-async def get_task_graph(run_id: str, user: User = Depends(get_user)):
+async def get_task_graph(run_id: str, user: User = Depends(get_current_user)):
     """
     Return current task DAG for visualization.
     
@@ -658,11 +830,13 @@ async def stream_agent_events(run_id: str):
         
         # Then poll for new events
         last_seen = existing[-1]["timestamp"] if existing else datetime.utcnow()
+        poll_count = 0
+        max_polls = 600  # Exit after ~10 minutes of polling
         
-        while True:
+        while poll_count < max_polls:
+            poll_count += 1
             new_events = await db().agentEvents.find({
                 "runId": rid,
-                
                 "timestamp": {"$gt": last_seen}
             }).sort("timestamp", 1).to_list(length=10)
             
@@ -673,12 +847,13 @@ async def stream_agent_events(run_id: str):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
                 last_seen = event["timestamp"]
             
-            # Check if run is done
+            # Check if run is done or failed
             run = await db().runs.find_one({"_id": rid})
-            if run and run.get("status") == "done":
-                yield "data: {\"done\": true}\n\n"
+            if run and run.get("status") in ["done", "failed", "cancelled"]:
+                yield f"data: {{\"done\": true, \"status\": \"{run.get('status')}\"}}\n\n"
                 break
             
+            yield ": keep-alive\n\n"
             await asyncio.sleep(1)  # Poll every second
     
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
@@ -687,10 +862,6 @@ async def stream_agent_events(run_id: str):
         media_type="text/event-stream",
         headers=headers
     )
-    
-
-    
-
     
 
 # uvicorn app:app --host 0.0.0.0 --port 8000

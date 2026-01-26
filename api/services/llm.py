@@ -1,7 +1,46 @@
-import os, httpx, json, re
-from typing import Any, Dict, List
+import os, httpx, json, re, logging
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 import json as _json
+
+from .retry import CircuitBreaker, RetryConfig, retry_async
+from .cache import llm_cache
+
+logger = logging.getLogger(__name__)
+
+# Circuit breaker for LLM API calls
+# Opens after 3 consecutive failures, recovers after 30 seconds
+_llm_circuit_breaker = CircuitBreaker(
+    failure_threshold=3,
+    recovery_time=30,
+    half_open_max_calls=2
+)
+
+# Retry configuration for LLM calls
+LLM_RETRY_CONFIG = RetryConfig(
+    max_retries=3,
+    base_delay=1.0,
+    max_delay=10.0,
+    exponential_base=2.0,
+    jitter=True,
+    retryable_status_codes={429, 500, 502, 503, 504}
+)
+
+
+class LLMServiceError(Exception):
+    """Base exception for LLM service errors."""
+    pass
+
+
+class LLMCircuitOpenError(LLMServiceError):
+    """Raised when circuit breaker is open."""
+    pass
+
+
+class LLMRateLimitError(LLMServiceError):
+    """Raised when rate limited by LLM provider."""
+    pass
+
 
 def _load_env():
     """Load environment variables when needed"""
@@ -23,15 +62,128 @@ def _get_headers():
         raise ValueError("LLM_API_KEY not found in environment variables")
     return {"Authorization": f"Bearer {config['key']}", "Content-Type": "application/json"}
 
-async def _chat(model: str, messages: List[Dict[str, str]], temperature: float = 0.2, *, json_mode: bool = False, max_tokens: int = 1000, timeout: int = 30) -> str:
+async def _chat(
+    model: str,
+    messages: List[Dict[str, str]],
+    temperature: float = 0.2,
+    *,
+    json_mode: bool = False,
+    max_tokens: int = 1000,
+    timeout: int = 30,
+    use_circuit_breaker: bool = True,
+    use_cache: bool = True
+) -> str:
+    """
+    Make a chat completion request to the LLM API.
+
+    Features:
+    - Circuit breaker to prevent hammering failing API
+    - Automatic retry with exponential backoff
+    - Detailed error logging
+    - Response caching for low-temperature queries
+
+    Args:
+        model: Model name to use
+        messages: Chat messages
+        temperature: Sampling temperature
+        json_mode: Whether to request JSON output
+        max_tokens: Maximum tokens in response
+        timeout: Request timeout in seconds
+        use_circuit_breaker: Whether to use circuit breaker (default True)
+        use_cache: Whether to use response cache (default True)
+
+    Returns:
+        The response content string
+
+    Raises:
+        LLMCircuitOpenError: If circuit breaker is open
+        LLMRateLimitError: If rate limited
+        LLMServiceError: For other LLM errors
+    """
     cfg = _get_config()
-    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+
+    # CACHE: Check for cached response (only for low temperature queries)
+    if use_cache:
+        cached_response = await llm_cache.get_response(messages, model, temperature)
+        if cached_response:
+            logger.debug(f"LLM cache hit for model {model}")
+            return cached_response
+
+    # Check circuit breaker
+    if use_circuit_breaker and not _llm_circuit_breaker.can_execute():
+        logger.warning("LLM circuit breaker is OPEN - service appears unavailable")
+        raise LLMCircuitOpenError(
+            "LLM service is temporarily unavailable. "
+            f"Circuit will reset in {_llm_circuit_breaker.time_until_recovery():.0f}s"
+        )
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens
+    }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
-    async with httpx.AsyncClient(base_url=cfg["base"], headers={"Authorization": f"Bearer {cfg['key']}"}, timeout=timeout) as cx:
-        r = await cx.post("/chat/completions", json=payload)
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
+
+    async def make_request() -> str:
+        async with httpx.AsyncClient(
+            base_url=cfg["base"],
+            headers={"Authorization": f"Bearer {cfg['key']}"},
+            timeout=timeout
+        ) as cx:
+            r = await cx.post("/chat/completions", json=payload)
+
+            # Handle rate limiting specifically
+            if r.status_code == 429:
+                retry_after = r.headers.get("Retry-After", "60")
+                logger.warning(f"LLM rate limited, retry after {retry_after}s")
+                raise LLMRateLimitError(f"Rate limited. Retry after {retry_after}s")
+
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"].strip()
+
+    try:
+        # Use retry logic for transient errors
+        result = await retry_async(
+            make_request,
+            config=LLM_RETRY_CONFIG,
+            operation_name=f"LLM chat ({model})"
+        )
+
+        # Record success for circuit breaker
+        if use_circuit_breaker:
+            _llm_circuit_breaker.record_success()
+
+        # CACHE: Store response for future requests (only for low temperature)
+        if use_cache:
+            await llm_cache.set_response(messages, model, temperature, result)
+
+        return result
+
+    except LLMRateLimitError:
+        # Rate limiting counts as failure for circuit breaker
+        if use_circuit_breaker:
+            _llm_circuit_breaker.record_failure()
+        raise
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"LLM HTTP error: {e.response.status_code} - {e.response.text[:200]}")
+        if use_circuit_breaker:
+            _llm_circuit_breaker.record_failure()
+        raise LLMServiceError(f"LLM request failed: HTTP {e.response.status_code}")
+
+    except httpx.TimeoutException:
+        logger.error(f"LLM request timeout after {timeout}s")
+        if use_circuit_breaker:
+            _llm_circuit_breaker.record_failure()
+        raise LLMServiceError(f"LLM request timed out after {timeout}s")
+
+    except Exception as e:
+        logger.error(f"LLM request failed: {type(e).__name__}: {e}")
+        if use_circuit_breaker:
+            _llm_circuit_breaker.record_failure()
+        raise LLMServiceError(f"LLM request failed: {e}")
 
 def _citations_from_pages(pages):
     return {str(i+1): {"url": p.get("url",""), "title": p.get("title","")} for i,p in enumerate(pages[:8])}

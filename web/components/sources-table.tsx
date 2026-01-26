@@ -1,12 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { ExternalLink, ChevronDown } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useResearchStore } from "@/stores"
 
 export interface Source {
   id: string
@@ -19,21 +20,34 @@ export interface Source {
 }
 
 interface SourcesTableProps {
-  sources: Source[]
+  sources?: Source[]
 }
 
 export function SourcesTable({ sources }: SourcesTableProps) {
+  const storeSources = useResearchStore((state) => state.sources)
+  const list = useMemo<Source[]>(() => {
+    if (sources) return sources
+    return storeSources.map((s, index) => ({
+      id: s.id || `source-${index}`,
+      title: s.title || "Untitled Source",
+      domain: s.url ? new URL(s.url).hostname.replace("www.", "") : "unknown",
+      score: s.score ?? 0,
+      round: (s.sectionIdx ?? 1),
+      url: s.url,
+      snapshot: s.venue || s.authors || s.sectionTitle || "",
+    }))
+  }, [sources, storeSources])
   const [selectedRound, setSelectedRound] = useState<string>("all")
   const [selectedDomain, setSelectedDomain] = useState<string>("all")
   const [sortBy, setSortBy] = useState<"score" | "round">("score")
 
-  const filteredSources = sources
+  const filteredSources = list
     .filter((s) => selectedRound === "all" || s.round === Number(selectedRound))
     .filter((s) => selectedDomain === "all" || s.domain === selectedDomain)
     .sort((a, b) => (sortBy === "score" ? b.score - a.score : a.round - b.round))
 
-  const uniqueDomains = Array.from(new Set(sources.map((s) => s.domain)))
-  const uniqueRounds = Array.from(new Set(sources.map((s) => s.round))).sort()
+  const uniqueDomains = Array.from(new Set(list.map((s) => s.domain)))
+  const uniqueRounds = Array.from(new Set(list.map((s) => s.round))).sort()
 
   return (
     <div className="space-y-4">
