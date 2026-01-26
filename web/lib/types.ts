@@ -7,6 +7,39 @@ export interface ResearchRun {
   progress: number
 }
 
+// Zustand store types (shared)
+export interface Run {
+  id: string
+  title: string
+  status: string
+  createdAt: Date
+  progress: number
+}
+
+export interface Source {
+  id: string
+  url: string
+  title: string
+  type?: 'academic' | 'web' | string
+  authors?: string
+  year?: string
+  venue?: string
+  citations?: number
+  score?: number
+  textLength?: number
+  sectionTitle?: string
+  sectionIdx?: number
+}
+
+export interface OutlineItem {
+  id: string
+  index: number
+  title: string
+  brief: string
+  status: 'queued' | 'searching' | 'reflecting' | 'drafting' | 'done' | 'needs review'
+  progress?: number
+}
+
 // Research message types
 export interface ResearchMessage {
   _id: string
