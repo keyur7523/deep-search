@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
-import { XIcon } from 'lucide-react'
+import { X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 
@@ -22,12 +22,6 @@ function DialogPortal({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
   return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
-}
-
-function DialogClose({
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Close>) {
-  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
 }
 
 function DialogOverlay({
@@ -55,7 +49,7 @@ function DialogContent({
   showCloseButton?: boolean
 }) {
   return (
-    <DialogPortal data-slot="dialog-portal">
+    <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
@@ -69,9 +63,9 @@ function DialogContent({
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
-            className="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+            className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none"
           >
-            <XIcon />
+            <X className="h-4 w-4" />
             <span className="sr-only">Close</span>
           </DialogPrimitive.Close>
         )}
@@ -80,7 +74,10 @@ function DialogContent({
   )
 }
 
-function DialogHeader({ className, ...props }: React.ComponentProps<'div'>) {
+function DialogHeader({
+  className,
+  ...props
+}: React.ComponentProps<'div'>) {
   return (
     <div
       data-slot="dialog-header"
@@ -90,14 +87,14 @@ function DialogHeader({ className, ...props }: React.ComponentProps<'div'>) {
   )
 }
 
-function DialogFooter({ className, ...props }: React.ComponentProps<'div'>) {
+function DialogFooter({
+  className,
+  ...props
+}: React.ComponentProps<'div'>) {
   return (
     <div
       data-slot="dialog-footer"
-      className={cn(
-        'flex flex-col-reverse gap-2 sm:flex-row sm:justify-end',
-        className,
-      )}
+      className={cn('flex flex-col-reverse gap-2 sm:flex-row sm:justify-end', className)}
       {...props}
     />
   )
@@ -110,7 +107,7 @@ function DialogTitle({
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn('text-lg leading-none font-semibold', className)}
+      className={cn('text-lg font-semibold leading-none', className)}
       {...props}
     />
   )
@@ -131,13 +128,13 @@ function DialogDescription({
 
 export {
   Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogOverlay,
   DialogPortal,
-  DialogTitle,
+  DialogOverlay,
   DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+  DialogDescription,
 }
+
