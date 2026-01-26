@@ -1,6 +1,7 @@
 import type * as React from "react"
 import { Slot } from "@radix-ui/react-slot"
 import { cva, type VariantProps } from "class-variance-authority"
+import { motion, type HTMLMotionProps } from "framer-motion"
 
 import { cn } from "@/lib/utils"
 
@@ -47,4 +48,29 @@ function Button({
   return <Comp data-slot="button" className={cn(buttonVariants({ variant, size, className }))} {...props} />
 }
 
-export { Button, buttonVariants }
+/**
+ * MotionButton - Button with Framer Motion tactile feedback
+ * Includes whileTap scale animation for better UX
+ */
+function MotionButton({
+  className,
+  variant,
+  size,
+  children,
+  ...props
+}: Omit<HTMLMotionProps<"button">, "ref"> &
+  VariantProps<typeof buttonVariants>) {
+  return (
+    <motion.button
+      data-slot="motion-button"
+      className={cn(buttonVariants({ variant, size, className }))}
+      whileTap={{ scale: 0.98 }}
+      transition={{ duration: 0.1 }}
+      {...props}
+    >
+      {children}
+    </motion.button>
+  )
+}
+
+export { Button, MotionButton, buttonVariants }
