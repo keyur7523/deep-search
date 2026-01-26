@@ -1,11 +1,12 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
-import { Separator } from "@/components/ui/separator"
+import { SkeletonList } from "@/components/ui/skeletons"
 import { TopicForm } from "@/components/topic-form"
+import { StaggerContainer, StaggerItem, AnimatePresence, FadeIn } from "@/components/ui/animations"
 import { Plus, Clock, CheckCircle, XCircle, Pause, Sparkles } from "lucide-react"
 import { ResearchThread } from "@/lib/types"
 import type { AgentMode } from "@/lib/types"
@@ -98,32 +99,29 @@ export function ResearchSidebar({
           </Button>
         </div>
         
-        {showNewForm && (
-          <div className="space-y-4">
-            <TopicForm onSubmit={handleNewResearch} />
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowNewForm(false)}
-              className="w-full"
-            >
-              Cancel
-            </Button>
-          </div>
-        )}
+        <AnimatePresence>
+          {showNewForm && (
+            <FadeIn className="space-y-4">
+              <TopicForm onSubmit={handleNewResearch} />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowNewForm(false)}
+                className="w-full"
+              >
+                Cancel
+              </Button>
+            </FadeIn>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Threads List */}
       <ScrollArea className="flex-1 p-4">
         <div className="space-y-3">
           {isLoading ? (
-            <div className="space-y-3">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="p-3 border border-border rounded-lg animate-pulse">
-                  <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
-                  <div className="h-3 bg-gray-200 rounded w-1/2"></div>
-                </div>
-              ))}
+            <div className="min-h-[240px]">
+              <SkeletonList items={4} hasIcon={false} hasSubtext={true} />
             </div>
           ) : threads.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
@@ -132,49 +130,52 @@ export function ResearchSidebar({
               <p className="text-xs">Start your first research project</p>
             </div>
           ) : (
-            threads.map((thread) => (
-              <div
-                key={thread.id}
-                className={`p-3 border rounded-lg cursor-pointer transition-all hover:shadow-sm ${
-                  currentThreadId === thread.id
-                    ? 'border-primary bg-primary/5'
-                    : 'border-border hover:border-primary/50'
-                }`}
-                onClick={() => onThreadSelect(thread.id)}
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <h3 className="font-medium text-sm text-foreground line-clamp-2 flex-1">
-                    {thread.title}
-                  </h3>
-                  <div className="flex items-center ml-2">
-                    {getStatusIcon(thread.status)}
-                  </div>
-                </div>
-                
-                <div className="flex items-center justify-between mb-2">
-                  <Badge 
-                    variant="outline" 
-                    className={`text-xs ${getStatusColor(thread.status)}`}
+            <StaggerContainer className="space-y-3">
+              {threads.map((thread) => (
+                <StaggerItem key={thread.id}>
+                  <div
+                    className={`p-3 border rounded-lg cursor-pointer transition-all hover:shadow-sm ${
+                      currentThreadId === thread.id
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border hover:border-primary/50'
+                    }`}
+                    onClick={() => onThreadSelect(thread.id)}
                   >
-                    {thread.status}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">
-                    {thread.progress}%
-                  </span>
-                </div>
-                
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{thread.messages?.length || 0} messages</span>
-                  <span>{formatDistanceToNow(new Date(thread.updatedAt), { addSuffix: true })}</span>
-                </div>
-                
-                {thread.latestMessage && (
-                  <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
-                    {thread.latestMessage}
-                  </p>
-                )}
-              </div>
-            ))
+                    <div className="flex items-start justify-between mb-2">
+                      <h3 className="font-medium text-sm text-foreground line-clamp-2 flex-1">
+                        {thread.title}
+                      </h3>
+                      <div className="flex items-center ml-2">
+                        {getStatusIcon(thread.status)}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between mb-2">
+                      <Badge
+                        variant="outline"
+                        className={`text-xs ${getStatusColor(thread.status)}`}
+                      >
+                        {thread.status}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {thread.progress}%
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>{thread.messages?.length || 0} messages</span>
+                      <span>{formatDistanceToNow(new Date(thread.updatedAt), { addSuffix: true })}</span>
+                    </div>
+
+                    {thread.latestMessage && (
+                      <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
+                        {thread.latestMessage}
+                      </p>
+                    )}
+                  </div>
+                </StaggerItem>
+              ))}
+            </StaggerContainer>
           )}
         </div>
       </ScrollArea>
