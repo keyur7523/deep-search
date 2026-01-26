@@ -51,3 +51,10 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+
+# Test/Build cache
+.pytest_cache/
+tsconfig.tsbuildinfo
+
+# Lockfile (using pnpm only)
+package-lock.json
