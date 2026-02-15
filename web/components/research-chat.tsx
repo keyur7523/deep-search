@@ -37,6 +37,7 @@ interface ResearchChatProps {
   onRunStarted?: (runId: string) => void
   onRunCreated?: (run: any) => void
   onStartNewChat?: () => void
+  initialTopic?: string
 }
 
 interface ResearchMessage {
@@ -71,7 +72,7 @@ const MODEL_TO_PROVIDER: Record<string, string> = {
 
 const MIN_TOPIC_LENGTH = 10
 
-export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat }: ResearchChatProps) {
+export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat, initialTopic }: ResearchChatProps) {
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const settingsRef = useRef<HTMLDivElement>(null)
@@ -82,7 +83,7 @@ export function ResearchChat({ runId, onRunStarted, onRunCreated, onStartNewChat
   const [showSettings, setShowSettings] = useState(false)
   const [showModelDropdown, setShowModelDropdown] = useState(false)
   const [selectedModel, setSelectedModel] = useState("Academic + Web")
-  const [topic, setTopic] = useState("")
+  const [topic, setTopic] = useState(initialTopic || "")
   const [sections, setSections] = useState(5)
   const [depth, setDepth] = useState(3)
   const [isCreating, setIsCreating] = useState(false)

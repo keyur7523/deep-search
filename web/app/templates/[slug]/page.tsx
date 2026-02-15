@@ -1,13 +1,75 @@
-import Link from "next/link"
-import { Button } from "@/components/ui/button"
-import { ThemeToggle } from "@/components/theme-toggle"
-import { Sparkles } from "lucide-react"
-import { PageTransition } from "@/components/ui/animations"
+import { draftMode } from 'next/headers'
+import { notFound } from 'next/navigation'
+import { getTemplateBySlug, getTemplates } from '@/lib/contentful'
+import { TemplateDetail } from '@/components/templates/template-detail'
+import { PreviewBanner } from '@/components/templates/preview-banner'
+import Link from 'next/link'
+import { ThemeToggle } from '@/components/theme-toggle'
+import type { Metadata } from 'next'
 
-export default function HomePage() {
+export const revalidate = 60
+
+interface PageProps {
+  params: { slug: string }
+}
+
+export async function generateStaticParams() {
+  const templates = await getTemplates()
+  return templates.map((t) => ({ slug: t.slug }))
+}
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const template = await getTemplateBySlug(params.slug)
+  if (!template) {
+    return { title: 'Template Not Found | DeepSearch' }
+  }
+
+  const description = template.promptText.slice(0, 160)
+
+  return {
+    title: `${template.title} — Research Template | DeepSearch`,
+    description,
+    openGraph: {
+      title: `${template.title} — Research Template | DeepSearch`,
+      description,
+      url: `https://deep-search-two.vercel.app/templates/${template.slug}`,
+    },
+    alternates: {
+      canonical: `https://deep-search-two.vercel.app/templates/${template.slug}`,
+    },
+  }
+}
+
+export default async function TemplateDetailPage({ params }: PageProps) {
+  const { isEnabled: isPreview } = draftMode()
+  const template = await getTemplateBySlug(params.slug, isPreview)
+
+  if (!template) {
+    notFound()
+  }
+
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'HowTo',
+    name: template.title,
+    description: template.promptText.slice(0, 200),
+    step: [
+      {
+        '@type': 'HowToStep',
+        text: 'Use this template in DeepSearch',
+      },
+    ],
+  }
+
   return (
-    <PageTransition className="min-h-screen">
-      <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col">
+      {isPreview && <PreviewBanner />}
+
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
+
       {/* Header */}
       <header className="sticky top-0 z-50 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="w-full flex h-16 items-center justify-between px-4 md:px-6">
@@ -41,48 +103,22 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* Hero Section */}
-      <main className="flex-1 flex items-center justify-center">
-        <section className="w-full max-w-6xl mx-auto px-4 md:px-6 py-20 md:py-32">
-          <div className="max-w-4xl mx-auto text-center space-y-8">
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#ede9fe] text-[#6d28d9] text-sm font-medium">
-              <Sparkles className="w-4 h-4" />
-              Multi-Agent Research Platform
-            </div>
-
-            <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold tracking-tight text-balance">
-              <span className="bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">Deep research</span> <span className="text-foreground">powered by AI agents</span>
-            </h1>
-
-            <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto text-pretty">
-              Deep Research orchestrates multiple AI agents to explore topics comprehensively, gather sources, and
-              generate detailed reports with citations.
-            </p>
-
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
-              <Button asChild size="lg" className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-2xl px-12 h-17 w-90 text-lg">
-                <Link href="/app">New Research</Link>
-              </Button>
-            </div>
-          </div>
-        </section>
-
+      {/* Main Content */}
+      <main className="flex-1 w-full max-w-6xl mx-auto px-4 md:px-6 py-12">
+        <TemplateDetail template={template} />
       </main>
 
       {/* Footer */}
       <footer className="border-t border-border py-8">
         <div className="w-full px-4 md:px-6">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-            <p className="text-sm text-muted-foreground">© 2025 Deep Research. All rights reserved.</p>
+            <p className="text-sm text-muted-foreground">&copy; 2025 Deep Research. All rights reserved.</p>
             <nav className="flex items-center gap-6 mr-4 md:mr-6">
               <Link href="/templates" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
                 Templates
               </Link>
               <Link href="/docs" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
                 Docs
-              </Link>
-              <Link href="/changelog" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-                Changelog
               </Link>
               <Link href="/contact" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
                 Contact
@@ -91,7 +127,6 @@ export default function HomePage() {
           </div>
         </div>
       </footer>
-      </div>
-    </PageTransition>
+    </div>
   )
 }

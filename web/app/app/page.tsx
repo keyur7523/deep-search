@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useMemo } from "react"
+import { useSearchParams } from "next/navigation"
 import { ResearchChat } from "@/components/research-chat"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { 
@@ -26,6 +27,8 @@ interface ResearchRun {
 }
 
 export default function AppPage() {
+  const searchParams = useSearchParams()
+  const initialTopic = searchParams.get('prompt') || undefined
   const [runs, setRuns] = useState<ResearchRun[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const { sidebarOpen, toggleSidebar } = useUIStore()
@@ -244,6 +247,7 @@ export default function AppPage() {
           onRunStarted={handleRunStarted}
           onRunCreated={handleRunCreated}
           onStartNewChat={handleStartNewChat}
+          initialTopic={initialTopic}
         />
       </div>
     </div>
